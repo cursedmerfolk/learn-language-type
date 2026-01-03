@@ -1,13 +1,29 @@
 let currentItem = null;
 let inputEnabled = true;
-let typedBuffer = [];
-let cursorIndex = 0;
-let charSpans = [];
-let cursorEndEl = null;
-let srcTokenRanges = [];
-let tgtTokenSpans = [];
-let englishAligned = false;
-let boundarySpaceSpans = [];
+
+let activeLang = 'sp';
+let hasTypedAny = false;
+
+let spText = '';
+let spTypedBuffer = [];
+let spCursorIndex = 0;
+let spCharSpans = [];
+let spCursorEndEl = null;
+let spTokenRanges = [];
+
+let enText = '';
+let enTypedBuffer = [];
+let enCursorIndex = 0;
+let enCharSpans = [];
+let enCursorEndEl = null;
+let enTokenRanges = [];
+
+let stepPlan = [];
+let stepIndex = 0;
+let spGroupStart = 0;
+let spGroupEnd = 0;
+let enGroupStart = 0;
+let enGroupEnd = 0;
 
 let durationSeconds = 30;
 let timerRunning = false;
@@ -24,7 +40,7 @@ let oskClearTimers = new Map();
 
 const el = {
   sentenceMeta: document.getElementById('sentenceMeta'),
-  englishBox: document.getElementById('englishBox'),
+  englishTypingBox: document.getElementById('englishTypingBox'),
   typingBox: document.getElementById('typingBox'),
   timeLeft: document.getElementById('timeLeft'),
   timeBar: document.getElementById('timeBar'),
@@ -67,6 +83,121 @@ function setMeta(text) {
 
 function setStatus(text) {
   el.status.textContent = text;
+}
+
+function setActiveLang(next) {
+  activeLang = next === 'en' ? 'en' : 'sp';
+  if (activeLang === 'sp') {
+    el.typingBox?.focus();
+  } else {
+    el.englishTypingBox?.focus();
+  }
+  updateRenderFromBuffers();
+}
+
+function computeTokenRanges(text) {
+  const ranges = [];
+  const re = /\S+/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    ranges.push({ start: m.index, end: m.index + m[0].length });
+  }
+  return ranges;
+}
+
+function tokenCharRange(text, tokenRanges, tokStart, tokEnd) {
+  if (!tokenRanges.length) return { start: 0, end: text.length };
+  const s = Math.max(0, Math.min(tokenRanges.length - 1, tokStart));
+  const e = Math.max(0, Math.min(tokenRanges.length - 1, tokEnd));
+  const start = tokenRanges[s].start;
+  let end = tokenRanges[e].end;
+  if (e + 1 < tokenRanges.length) end = tokenRanges[e + 1].start;
+  else end = text.length;
+  return { start, end };
+}
+
+function buildFallbackAlignment(srcCount, tgtCount) {
+  const map = {};
+  const denom = Math.max(1, srcCount - 1);
+  for (let i = 0; i < srcCount; i += 1) {
+    const j = Math.round((i * (tgtCount - 1)) / denom);
+    map[String(i)] = [j];
+  }
+  return map;
+}
+
+function buildStepPlanFromAlignment(align) {
+  const srcCount = spTokenRanges.length;
+  const tgtCount = enTokenRanges.length;
+  const alignMap = (align && Object.keys(align).length) ? align : buildFallbackAlignment(srcCount, tgtCount);
+
+  let nextTgtTok = 0;
+  const steps = [];
+
+  for (let srcTok = 0; srcTok < srcCount; srcTok += 1) {
+    const aligned = Array.isArray(alignMap[String(srcTok)]) ? alignMap[String(srcTok)] : [];
+    const filtered = aligned
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x) && x >= nextTgtTok)
+      .sort((a, b) => a - b);
+
+    let tgtStart = null;
+    let tgtEnd = null;
+    if (filtered.length) {
+      // Ensure we don't leave gaps in the English side.
+      // If the next aligned token is ahead of our next target, start at nextTgtTok.
+      tgtStart = Math.min(filtered[0], nextTgtTok);
+      tgtEnd = tgtStart;
+      for (let k = 1; k < filtered.length; k += 1) {
+        if (filtered[k] === tgtEnd + 1) tgtEnd = filtered[k];
+        else break;
+      }
+    } else if (nextTgtTok < tgtCount) {
+      tgtStart = nextTgtTok;
+      tgtEnd = nextTgtTok;
+    }
+
+    if (tgtStart !== null && tgtEnd !== null) {
+      nextTgtTok = Math.min(tgtCount, tgtEnd + 1);
+    }
+
+    const spRange = tokenCharRange(spText, spTokenRanges, srcTok, srcTok);
+    let enRange = { start: enText.length, end: enText.length };
+    if (tgtStart !== null && tgtEnd !== null && tgtCount) {
+      const s = Math.max(0, Math.min(tgtCount - 1, tgtStart));
+      const e = Math.max(0, Math.min(tgtCount - 1, tgtEnd));
+      enRange = tokenCharRange(enText, enTokenRanges, s, e);
+    }
+
+    steps.push({
+      spStart: spRange.start,
+      spEnd: spRange.end,
+      enStart: enRange.start,
+      enEnd: enRange.end,
+    });
+  }
+
+  // If English has remaining tokens, append them to the final English group.
+  if (steps.length && nextTgtTok < tgtCount) {
+    const last = steps[steps.length - 1];
+    const tail = tokenCharRange(enText, enTokenRanges, nextTgtTok, tgtCount - 1);
+    last.enEnd = Math.max(last.enEnd, tail.end);
+  }
+
+  return steps;
+}
+
+function setCurrentStep(idx) {
+  const s = stepPlan[idx];
+  if (!s) return;
+  spGroupStart = s.spStart;
+  spGroupEnd = s.spEnd;
+  enGroupStart = s.enStart;
+  enGroupEnd = s.enEnd;
+
+  // Ensure cursors don't drift behind group starts.
+  if (spCursorIndex < spGroupStart) spCursorIndex = spGroupStart;
+  if (enCursorIndex < enGroupStart) enCursorIndex = enGroupStart;
 }
 
 function initOnscreenKeyboard() {
@@ -336,9 +467,9 @@ function syncDurationUi() {
   resetTimerUi();
 }
 
-function buildSpansForReference(referenceText) {
-  charSpans = [];
-  el.typingBox.textContent = '';
+function buildSpansForReference(referenceText, containerEl) {
+  const spans = [];
+  containerEl.textContent = '';
 
   for (let i = 0; i < referenceText.length; i += 1) {
     const span = document.createElement('span');
@@ -347,389 +478,54 @@ function buildSpansForReference(referenceText) {
       span.classList.add('ws');
     }
     span.textContent = referenceText[i];
-    charSpans.push(span);
-    el.typingBox.appendChild(span);
+    spans.push(span);
+    containerEl.appendChild(span);
   }
 
-  cursorEndEl = document.createElement('span');
-  cursorEndEl.className = 'cursorEnd';
-  el.typingBox.appendChild(cursorEndEl);
+  const endEl = document.createElement('span');
+  endEl.className = 'cursorEnd';
+  containerEl.appendChild(endEl);
+  return { spans, endEl };
 }
 
-function updateCursorVisual() {
-  for (const s of charSpans) s.classList.remove('cursor');
-  if (!currentItem) return;
+function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive) {
+  for (let i = 0; i < spans.length; i += 1) {
+    const span = spans[i];
+    span.classList.remove('correct', 'incorrect', 'cursor');
+    if (typedBuffer[i] !== undefined) {
+      if (typedBuffer[i] === text[i]) span.classList.add('correct');
+      else span.classList.add('incorrect');
+    }
+  }
 
-  if (cursorIndex >= charSpans.length) {
-    cursorEndEl.style.display = 'inline-block';
+  endEl.style.display = 'none';
+  if (!isActive) return;
+
+  if (cursorIdx >= spans.length) {
+    endEl.style.display = 'inline-block';
     return;
   }
-
-  cursorEndEl.style.display = 'none';
-  charSpans[cursorIndex].classList.add('cursor');
+  spans[cursorIdx].classList.add('cursor');
 }
 
-function updateRenderFromBuffer() {
-  if (!currentItem) return;
-  const referenceText = currentItem.spanish;
-
-  for (let i = 0; i < charSpans.length; i += 1) {
-    const span = charSpans[i];
-    span.classList.remove('correct', 'incorrect');
-
-    if (i < typedBuffer.length) {
-      if (typedBuffer[i] === referenceText[i]) {
-        span.classList.add('correct');
-      } else {
-        span.classList.add('incorrect');
-      }
-    }
-  }
-
-  updateCursorVisual();
-  updateEnglishHighlight();
+function updateRenderFromBuffers() {
+  renderTypingRow(spText, spTypedBuffer, spCursorIndex, spCharSpans, spCursorEndEl, activeLang === 'sp');
+  renderTypingRow(enText, enTypedBuffer, enCursorIndex, enCharSpans, enCursorEndEl, activeLang === 'en');
 }
-
-function computeTokenRanges(text) {
-  const ranges = [];
-  const re = /\S+/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    ranges.push({ start: m.index, end: m.index + m[0].length });
-  }
-  return ranges;
-}
-
-function renderEnglishTokens(tokens) {
-  tgtTokenSpans = [];
-  el.englishBox.textContent = '';
-  englishAligned = false;
-
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (i > 0) el.englishBox.appendChild(document.createTextNode(' '));
-    const span = document.createElement('span');
-    span.className = 'tok';
-    span.textContent = tokens[i];
-    tgtTokenSpans.push(span);
-    el.englishBox.appendChild(span);
-  }
-}
-
-function computeSpanishTokenBoxes() {
-  // Returns { center, width } for each Spanish token, relative to sentenceWrap.
-  const wrap = document.getElementById('sentenceWrap');
-  if (!wrap) return [];
-  const wrapRect = wrap.getBoundingClientRect();
-  const boxes = [];
-
-  for (const r of srcTokenRanges) {
-    const startIdx = Math.max(0, Math.min(r.start, charSpans.length - 1));
-    const endIdx = Math.max(0, Math.min(r.end - 1, charSpans.length - 1));
-    const a = charSpans[startIdx];
-    const b = charSpans[endIdx];
-    if (!a || !b) {
-      boxes.push({ center: wrapRect.width / 2, width: 0 });
-      continue;
-    }
-    const ra = a.getBoundingClientRect();
-    const rb = b.getBoundingClientRect();
-    const left = Math.min(ra.left, rb.left);
-    const right = Math.max(ra.right, rb.right);
-    boxes.push({ center: ((left + right) / 2) - wrapRect.left, width: Math.max(0, right - left) });
-  }
-
-  return boxes;
-}
-
-function computeBoundaryWhitespaceSpans(referenceText) {
-  // For each boundary between Spanish tokens i and i+1, pick the first whitespace
-  // span right after token i. We'll widen that span to push subsequent words.
-  const spans = [];
-  for (let i = 0; i < srcTokenRanges.length - 1; i += 1) {
-    const wsStart = srcTokenRanges[i].end;
-    const span = charSpans[wsStart];
-    if (span && /\s/.test(referenceText[wsStart] || '')) {
-      spans.push(span);
-    } else {
-      spans.push(null);
-    }
-  }
-  return spans;
-}
-
-function resetSpanishSpacing() {
-  for (const s of boundarySpaceSpans) {
-    if (!s) continue;
-    s.style.width = '';
-    s.style.display = '';
-  }
-}
-
-function spreadSpanishForEnglish() {
-  if (!currentItem) return;
-  if (!currentItem.align || Object.keys(currentItem.align).length === 0) return;
-  if (!tgtTokenSpans.length) return;
-
-  // Start from default spacing each time (avoid accumulating widths).
-  resetSpanishSpacing();
-
-  const ref = currentItem.spanish;
-  boundarySpaceSpans = computeBoundaryWhitespaceSpans(ref);
-
-  const boxes = computeSpanishTokenBoxes();
-  if (!boxes.length) return;
-
-  const tgtToSrc = buildTgtToSrcMap(currentItem.align);
-  const englishWidths = tgtTokenSpans.map((s) => s.getBoundingClientRect().width);
-
-  // For each Spanish token, compute the max width of aligned English tokens.
-  const maxEnBySrc = new Array(boxes.length).fill(0);
-  for (let j = 0; j < englishWidths.length; j += 1) {
-    const srcList = tgtToSrc[String(j)] || [];
-    if (!srcList.length) continue;
-    const w = englishWidths[j] || 0;
-    for (const i of srcList) {
-      if (i >= 0 && i < maxEnBySrc.length) {
-        maxEnBySrc[i] = Math.max(maxEnBySrc[i], w);
-      }
-    }
-  }
-
-  // Larger pad/gap means we allocate more horizontal room for English tokens.
-  const baseGap = 18;
-  const pad = 18;
-  const desiredWidth = boxes.map((b, i) => Math.max(b.width, maxEnBySrc[i] + pad));
-
-  // Compute target centers (greedy) so desired token boxes don't overlap.
-  const targetCenters = new Array(boxes.length).fill(0);
-  targetCenters[0] = boxes[0].center;
-  for (let i = 1; i < boxes.length; i += 1) {
-    const prev = targetCenters[i - 1];
-    const delta = (desiredWidth[i - 1] / 2) + (desiredWidth[i] / 2) + baseGap;
-    targetCenters[i] = prev + delta;
-  }
-
-  // Normalize to keep the sentence roughly centered.
-  const natFirst = boxes[0].center;
-  const natLast = boxes[boxes.length - 1].center;
-  const tgtFirst = targetCenters[0];
-  const tgtLast = targetCenters[targetCenters.length - 1];
-  const natMid = (natFirst + natLast) / 2;
-  const tgtMid = (tgtFirst + tgtLast) / 2;
-  const shiftAll = natMid - tgtMid;
-  for (let i = 0; i < targetCenters.length; i += 1) {
-    targetCenters[i] += shiftAll;
-  }
-
-  // Compute per-boundary extra spacing needed and apply to whitespace spans.
-  const shifts = boxes.map((b, i) => targetCenters[i] - b.center);
-  // Apply extra spacing more aggressively to reduce English wrapping.
-  const spreadFactor = 1.6;
-
-  for (let i = 0; i < boundarySpaceSpans.length; i += 1) {
-    const span = boundarySpaceSpans[i];
-    if (!span) continue;
-
-    const deltaShift = (shifts[i + 1] ?? 0) - (shifts[i] ?? 0);
-    const extra = Math.max(0, deltaShift) * spreadFactor;
-    if (extra <= 0.5) continue;
-
-    const rect = span.getBoundingClientRect();
-    const baseW = Math.max(2, rect.width || 0);
-    span.style.display = 'inline-block';
-    span.style.width = `${(baseW + extra).toFixed(1)}px`;
-  }
-}
-
-function computeSpanishTokenCenters() {
-  // Returns x-centers (in px) for each Spanish token, relative to sentenceWrap.
-  const wrap = document.getElementById('sentenceWrap');
-  if (!wrap) return [];
-  const wrapRect = wrap.getBoundingClientRect();
-  const centers = [];
-
-  for (const r of srcTokenRanges) {
-    const startIdx = Math.max(0, Math.min(r.start, charSpans.length - 1));
-    const endIdx = Math.max(0, Math.min(r.end - 1, charSpans.length - 1));
-    const a = charSpans[startIdx];
-    const b = charSpans[endIdx];
-    if (!a || !b) {
-      centers.push(wrapRect.width / 2);
-      continue;
-    }
-    const ra = a.getBoundingClientRect();
-    const rb = b.getBoundingClientRect();
-    const left = Math.min(ra.left, rb.left);
-    const right = Math.max(ra.right, rb.right);
-    centers.push(((left + right) / 2) - wrapRect.left);
-  }
-
-  return centers;
-}
-
-function buildTgtToSrcMap(align) {
-  const tgtToSrc = {};
-  const a = align || {};
-  for (const [srcIdxStr, tgtList] of Object.entries(a)) {
-    const srcIdx = Number(srcIdxStr);
-    if (!Number.isFinite(srcIdx)) continue;
-    if (!Array.isArray(tgtList)) continue;
-    for (const j of tgtList) {
-      if (!Number.isFinite(j)) continue;
-      const k = String(j);
-      if (!tgtToSrc[k]) tgtToSrc[k] = [];
-      tgtToSrc[k].push(srcIdx);
-    }
-  }
-  return tgtToSrc;
-}
-
-function layoutEnglishTokensAligned() {
-  if (!currentItem) return;
-  if (!tgtTokenSpans.length) return;
-  if (!currentItem.align || Object.keys(currentItem.align).length === 0) return;
-
-  const wrap = document.getElementById('sentenceWrap');
-  if (!wrap) return;
-  const wrapRect = wrap.getBoundingClientRect();
-  const containerW = wrapRect.width;
-  if (containerW <= 0) return;
-
-  const centers = computeSpanishTokenBoxes().map((b) => b.center);
-  const tgtToSrc = buildTgtToSrcMap(currentItem.align);
-
-  // Re-render English without spaces so we can absolutely position each token.
-  el.englishBox.textContent = '';
-  for (const span of tgtTokenSpans) {
-    span.style.position = 'absolute';
-    span.style.left = '0px';
-    span.style.top = '0px';
-    // We'll position by left edge (not centered) to avoid a rigid column look.
-    span.style.transform = 'none';
-    span.style.whiteSpace = 'nowrap';
-    span.style.visibility = 'hidden';
-    el.englishBox.appendChild(span);
-  }
-
-  const tokenWidths = tgtTokenSpans.map((s) => s.getBoundingClientRect().width);
-
-  const items = tgtTokenSpans.map((span, j) => {
-    const srcList = tgtToSrc[String(j)] || [];
-    let x;
-    if (srcList.length) {
-      let sum = 0;
-      let n = 0;
-      for (const i of srcList) {
-        if (i >= 0 && i < centers.length) {
-          sum += centers[i];
-          n += 1;
-        }
-      }
-      x = n ? (sum / n) : null;
-    } else {
-      x = null;
-    }
-
-    // Fallback: distribute across the container.
-    if (x === null) {
-      const denom = Math.max(1, tgtTokenSpans.length - 1);
-      x = (containerW * (j / denom));
-    }
-
-    const w = tokenWidths[j] || 0;
-    const desiredLeft = x - (w / 2);
-    return { j, x, desiredLeft, w };
-  });
-
-  items.sort((a, b) => a.x - b.x);
-
-  const lineHeight = 20;
-  const gap = 6;
-
-  // Try to lay out on a single row by letting tokens shift
-  // to avoid overlaps (flow-like layout).
-  const placements = new Array(tgtTokenSpans.length).fill(null);
-  let prevRight = 0;
-  let minLeft = Infinity;
-  let maxRight = -Infinity;
-
-  for (const it of items) {
-    const w = it.w || 0;
-    let left = it.desiredLeft;
-    left = Math.max(0, Math.min(containerW - w, left));
-    left = Math.max(left, prevRight + gap);
-    const right = left + w;
-    placements[it.j] = { left, top: 0, w };
-    prevRight = right;
-    minLeft = Math.min(minLeft, left);
-    maxRight = Math.max(maxRight, right);
-  }
-
-  // If we overflow the container, shift the whole row left as much as possible.
-  if (Number.isFinite(minLeft) && maxRight > containerW) {
-    const overflow = maxRight - containerW;
-    const shift = Math.min(overflow, minLeft);
-    if (shift > 0) {
-      for (let j = 0; j < placements.length; j += 1) {
-        if (!placements[j]) continue;
-        placements[j].left -= shift;
-      }
-      minLeft -= shift;
-      maxRight -= shift;
-    }
-  }
-
-  // Still overflow? Fall back to multi-row packing (but not rigid columns).
-  if (maxRight > containerW) {
-    const lineRight = [];
-    for (const it of items) {
-      const w = it.w || 0;
-      let placedLine = 0;
-      while (placedLine < lineRight.length) {
-        const candidateLeft = Math.max(0, lineRight[placedLine] + gap);
-        // If it doesn't fit on this line, try the next line.
-        if (candidateLeft + w <= containerW) break;
-        placedLine += 1;
-      }
-      if (placedLine === lineRight.length) lineRight.push(0);
-
-      const baseLeft = Math.max(0, Math.min(containerW - w, it.desiredLeft));
-      const left = Math.max(baseLeft, lineRight[placedLine] + gap);
-      const right = left + w;
-      lineRight[placedLine] = Math.max(lineRight[placedLine], right);
-      placements[it.j] = { left, top: placedLine * lineHeight, w };
-    }
-    el.englishBox.style.height = `${Math.max(1, lineRight.length) * lineHeight}px`;
-  } else {
-    el.englishBox.style.height = `${lineHeight}px`;
-  }
-
-  for (let j = 0; j < placements.length; j += 1) {
-    const p = placements[j];
-    if (!p) continue;
-    const span = tgtTokenSpans[j];
-    span.style.left = `${p.left.toFixed(1)}px`;
-    span.style.top = `${p.top.toFixed(1)}px`;
-    span.style.visibility = 'visible';
-  }
-
-  englishAligned = true;
-}
-
 function updateAlignmentForCurrentSentence(alignPayload) {
   if (!currentItem) return;
   if (alignPayload?.sp_id !== currentItem.sp_id) return;
   currentItem.align = alignPayload.align || {};
-  // Prefer aligner's tokens if provided.
-  if (Array.isArray(alignPayload.tgt_tokens)) {
-    currentItem.tgt_tokens = alignPayload.tgt_tokens;
-    renderEnglishTokens(currentItem.tgt_tokens);
+
+  const prevStep = stepIndex;
+  stepPlan = buildStepPlanFromAlignment(currentItem.align);
+  if (!stepPlan.length) {
+    stepPlan = [{ spStart: 0, spEnd: spText.length, enStart: 0, enEnd: enText.length }];
   }
-  // First widen Spanish spacing to reduce English wrapping,
-  // then position English tokens.
-  spreadSpanishForEnglish();
-  layoutEnglishTokensAligned();
-  updateEnglishHighlight();
+  stepIndex = Math.max(0, Math.min(stepPlan.length - 1, prevStep));
+  setCurrentStep(stepIndex);
+  advanceIfNeeded();
+  updateRenderFromBuffers();
 }
 
 async function fetchAlignment(spId) {
@@ -741,81 +537,89 @@ async function fetchAlignment(spId) {
   }
 }
 
-function getActiveSrcTokenIndex() {
-  if (!currentItem) return null;
-  const ref = currentItem.spanish;
+function advanceIfNeeded() {
+  // Advance through empty groups and switch focus per step:
+  // Spanish group -> English group -> next step.
+  let guard = 0;
+  while (guard < 10) {
+    guard += 1;
 
-  // Prefer the current cursor position (the next character to type).
-  // This makes highlighting visible immediately (even before typing).
-  let pos = Math.min(Math.max(0, cursorIndex), Math.max(0, ref.length - 1));
+    if (stepIndex >= stepPlan.length) return;
+    const s = stepPlan[stepIndex];
+    if (!s) return;
 
-  // If we're sitting on whitespace (e.g. between words), fall back to the
-  // previous non-whitespace character so the highlight doesn't disappear.
-  if (/\s/.test(ref[pos])) {
-    for (let p = Math.min(pos - 1, ref.length - 1); p >= 0; p -= 1) {
-      if (!/\s/.test(ref[p])) {
-        pos = p;
-        break;
-      }
+    // Sync group bounds.
+    setCurrentStep(stepIndex);
+
+    if (activeLang === 'sp') {
+      const done = spCursorIndex >= spGroupEnd || spGroupEnd <= spGroupStart;
+      if (!done) return;
+      setActiveLang('en');
+      continue;
     }
-  }
 
-  for (let i = 0; i < srcTokenRanges.length; i += 1) {
-    const r = srcTokenRanges[i];
-    if (r.start <= pos && pos < r.end) return i;
+    const done = enCursorIndex >= enGroupEnd || enGroupEnd <= enGroupStart;
+    if (!done) return;
+
+    stepIndex += 1;
+    if (stepIndex >= stepPlan.length) return;
+    setCurrentStep(stepIndex);
+    setActiveLang('sp');
   }
-  return null;
 }
 
-function updateEnglishHighlight() {
+function finishSentenceIfDone() {
   if (!currentItem) return;
-  for (const s of tgtTokenSpans) s.classList.remove('hl');
+  if (stepIndex < stepPlan.length) return;
 
-  const srcIdx = getActiveSrcTokenIndex();
-  if (srcIdx === null) return;
-
-  const alignMap = currentItem.align || {};
-  const aligned = alignMap[String(srcIdx)] || [];
-
-  // If alignment isn't available yet (often because the SimAlign model is
-  // still loading on first run), fall back to a cheap proportional mapping so
-  // the underline feature works immediately.
-  if (!aligned.length) {
-    const srcCount = Math.max(1, srcTokenRanges.length);
-    const tgtCount = Math.max(1, tgtTokenSpans.length);
-    const denom = Math.max(1, srcCount - 1);
-    const j = Math.round((srcIdx * (tgtCount - 1)) / denom);
-    if (j >= 0 && j < tgtTokenSpans.length) tgtTokenSpans[j].classList.add('hl');
-    return;
-  }
-
-  for (const j of aligned) {
-    if (j >= 0 && j < tgtTokenSpans.length) {
-      tgtTokenSpans[j].classList.add('hl');
-    }
+  sentencesCompleted += 1;
+  if (timerRunning) {
+    loadRandomSentence().catch((e) => {
+      setMeta(String(e?.message || e));
+    });
   }
 }
 
 function startSentence(item) {
   currentItem = item;
-  typedBuffer = [];
-  cursorIndex = 0;
   inputEnabled = true;
+  hasTypedAny = false;
 
-  buildSpansForReference(item.spanish);
-  srcTokenRanges = computeTokenRanges(item.spanish);
-  boundarySpaceSpans = computeBoundaryWhitespaceSpans(item.spanish);
-  renderEnglishTokens(item.tgt_tokens || item.english.split(/\s+/).filter(Boolean));
+  spText = String(item.spanish || '');
+  enText = String(item.english || '');
+
+  spTypedBuffer = [];
+  enTypedBuffer = [];
+  spCursorIndex = 0;
+  enCursorIndex = 0;
+
+  const spRender = buildSpansForReference(spText, el.typingBox);
+  spCharSpans = spRender.spans;
+  spCursorEndEl = spRender.endEl;
+
+  const enRender = buildSpansForReference(enText, el.englishTypingBox);
+  enCharSpans = enRender.spans;
+  enCursorEndEl = enRender.endEl;
+
+  spTokenRanges = computeTokenRanges(spText);
+  enTokenRanges = computeTokenRanges(enText);
+
+  stepPlan = buildStepPlanFromAlignment(item.align || {});
+  if (!stepPlan.length) {
+    stepPlan = [{ spStart: 0, spEnd: spText.length, enStart: 0, enEnd: enText.length }];
+  }
+  stepIndex = 0;
+  setCurrentStep(stepIndex);
+  spCursorIndex = spGroupStart;
+  enCursorIndex = enGroupStart;
 
   setMeta('');
-  // Alignment is fetched lazily so the first paint is fast.
-  if (item.sp_id) {
-    fetchAlignment(item.sp_id);
-  }
+  if (item.sp_id) fetchAlignment(item.sp_id);
 
   el.retryBtn.disabled = false;
-  el.typingBox.focus();
-  updateRenderFromBuffer();
+  setActiveLang('sp');
+  advanceIfNeeded();
+  updateRenderFromBuffers();
 }
 
 async function fetchJson(url) {
@@ -840,6 +644,7 @@ function startNewRound() {
   stopTimer();
   timerRunning = false;
   startTs = null;
+  hasTypedAny = false;
   roundCorrect = 0;
   roundTyped = 0;
   roundNonSpace = 0;
@@ -859,45 +664,80 @@ function acceptChar(ch) {
   if (!currentItem) return;
   if (!inputEnabled) return;
 
-  const ref = currentItem.spanish;
-  if (cursorIndex >= ref.length) return;
+  // Ensure we're on a valid step.
+  if (!stepPlan.length) return;
 
-  startAttemptIfNeeded();
+  // Start the timer on the first typed character (either language).
+  if (!hasTypedAny) {
+    hasTypedAny = true;
+    startAttemptIfNeeded();
+  }
 
-  const expected = ref[cursorIndex];
+  // Choose active row state.
+  const isSp = activeLang === 'sp';
+  const text = isSp ? spText : enText;
+  const groupStart = isSp ? spGroupStart : enGroupStart;
+  const groupEnd = isSp ? spGroupEnd : enGroupEnd;
+
+  let cursor = isSp ? spCursorIndex : enCursorIndex;
+  if (cursor < groupStart) cursor = groupStart;
+  if (cursor >= groupEnd || cursor >= text.length) {
+    // If the current group is already complete, advance and ignore the key.
+    if (isSp) spCursorIndex = cursor;
+    else enCursorIndex = cursor;
+    advanceIfNeeded();
+    finishSentenceIfDone();
+    updateRenderFromBuffers();
+    return;
+  }
+
+  const expected = text[cursor];
   roundTyped += 1;
   if (ch === expected) roundCorrect += 1;
   if (!/\s/.test(ch)) roundNonSpace += 1;
 
-  typedBuffer[cursorIndex] = ch;
-  cursorIndex = Math.min(ref.length, cursorIndex + 1);
-  updateRenderFromBuffer();
-
-  if (cursorIndex >= ref.length) {
-    sentencesCompleted += 1;
-    if (timerRunning) {
-      loadRandomSentence().catch((e) => {
-        setMeta(String(e?.message || e));
-      });
-    }
+  if (isSp) {
+    spTypedBuffer[cursor] = ch;
+    spCursorIndex = cursor + 1;
+  } else {
+    enTypedBuffer[cursor] = ch;
+    enCursorIndex = cursor + 1;
   }
+
+  advanceIfNeeded();
+  finishSentenceIfDone();
+  updateRenderFromBuffers();
 }
 
 function handleBackspace() {
   if (!currentItem) return;
   if (!inputEnabled) return;
-  if (cursorIndex <= 0) return;
 
-  cursorIndex -= 1;
-  typedBuffer.splice(cursorIndex, 1);
-  updateRenderFromBuffer();
+  const isSp = activeLang === 'sp';
+  const groupStart = isSp ? spGroupStart : enGroupStart;
+
+  if (isSp) {
+    if (spCursorIndex <= groupStart) return;
+    spCursorIndex -= 1;
+    spTypedBuffer[spCursorIndex] = undefined;
+  } else {
+    if (enCursorIndex <= groupStart) return;
+    enCursorIndex -= 1;
+    enTypedBuffer[enCursorIndex] = undefined;
+  }
+
+  updateRenderFromBuffers();
 }
 
 el.typingBox.addEventListener('click', () => {
   el.typingBox.focus();
 });
 
-el.typingBox.addEventListener('keydown', (ev) => {
+el.englishTypingBox.addEventListener('click', () => {
+  el.englishTypingBox.focus();
+});
+
+function handleTypingKeydown(ev) {
   if (!currentItem) return;
   if (!inputEnabled) {
     ev.preventDefault();
@@ -925,7 +765,6 @@ el.typingBox.addEventListener('keydown', (ev) => {
   }
 
   if (ev.key === 'Enter') {
-    // Most sentences are single-line; ignore Enter.
     ev.preventDefault();
     return;
   }
@@ -934,6 +773,14 @@ el.typingBox.addEventListener('keydown', (ev) => {
     ev.preventDefault();
     acceptChar(ev.key);
   }
+}
+
+el.typingBox.addEventListener('keydown', (ev) => {
+  handleTypingKeydown(ev);
+});
+
+el.englishTypingBox.addEventListener('keydown', (ev) => {
+  handleTypingKeydown(ev);
 });
 
 // Revert symbol row when Shift is released.

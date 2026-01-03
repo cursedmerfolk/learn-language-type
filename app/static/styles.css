@@ -236,6 +236,20 @@ dialog::backdrop {
   color: #555;
 }
 
+.learnEnglishTyping {
+  min-height: 0;
+  border: none;
+  padding: 0;
+  margin: 0;
+  outline: none;
+  cursor: text;
+  text-align: center;
+  white-space: pre-wrap;
+  font-size: 22px;
+  line-height: 1.25;
+  font-family: inherit;
+}
+
 .learnSpanish {
   min-height: 0;
   border: none;
