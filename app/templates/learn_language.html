@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Learn Language</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Learn Language</h1>
+
+      <section class="meta" aria-label="Sentence metadata">
+        <div id="sentenceMeta" class="muted">Loading…</div>
+      </section>
+
+      <section class="pane" aria-label="English translation">
+        <div class="muted" style="margin-bottom: 6px;">English</div>
+        <div id="englishBox" class="translation" aria-label="English sentence"></div>
+      </section>
+
+      <section class="pane" aria-label="Spanish sentence to type">
+        <div class="muted" style="margin-bottom: 6px;">Type Spanish</div>
+        <pre id="typingBox" class="code typingbox" tabindex="0" role="textbox" aria-multiline="true" aria-label="Type the Spanish sentence shown"></pre>
+      </section>
+
+      <section class="row actions" aria-label="Actions">
+        <button id="newSetBtn" class="btn" type="button">New sentences</button>
+        <button id="retryBtn" class="btn" type="button" disabled>Retry sentence</button>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='learn_language.js') }}"></script>
+  </body>
+</html>

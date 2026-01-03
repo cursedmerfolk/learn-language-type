@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "compilerPath": "gcc",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64",
+            "includePath": [
+                "${workspaceFolder}/build/assets",
+                "/usr/lib/gbdk/include",
+                "${workspaceFolder}/external-resources/gbdk-2020/gbdk-lib/include",
+                "${workspaceFolder}/external-resources/CrossZGB/common/include",
+            ],
+            "defines": [
+                "__PORT_sm83"
+            ]
+        }
+    ],
+    "version": 4
+}
