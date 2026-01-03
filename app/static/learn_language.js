@@ -18,6 +18,8 @@ let enCharSpans = [];
 let enCursorEndEl = null;
 let enTokenRanges = [];
 
+let spBoundarySpaceSpans = [];
+
 let stepPlan = [];
 let stepIndex = 0;
 let spGroupStart = 0;
@@ -37,6 +39,8 @@ let sentencesCompleted = 0;
 
 let osk = null;
 let oskClearTimers = new Map();
+
+let datasetItems = null;
 
 const el = {
   sentenceMeta: document.getElementById('sentenceMeta'),
@@ -126,62 +130,203 @@ function buildFallbackAlignment(srcCount, tgtCount) {
   return map;
 }
 
-function buildStepPlanFromAlignment(align) {
-  const srcCount = spTokenRanges.length;
-  const tgtCount = enTokenRanges.length;
-  const alignMap = (align && Object.keys(align).length) ? align : buildFallbackAlignment(srcCount, tgtCount);
-
-  let nextTgtTok = 0;
-  const steps = [];
-
-  for (let srcTok = 0; srcTok < srcCount; srcTok += 1) {
-    const aligned = Array.isArray(alignMap[String(srcTok)]) ? alignMap[String(srcTok)] : [];
-    const filtered = aligned
+function buildAlignFromGroups(groups, srcCount, tgtCount) {
+  const mapping = {};
+  const g = Array.isArray(groups) ? groups : [];
+  for (const group of g) {
+    const es = Array.isArray(group?.es) ? group.es : [];
+    const en = Array.isArray(group?.en) ? group.en : [];
+    const enClean = en
       .map((x) => Number(x))
-      .filter((x) => Number.isFinite(x) && x >= nextTgtTok)
+      .filter((x) => Number.isFinite(x) && x >= 0 && x < tgtCount);
+    if (!enClean.length) continue;
+    for (const iRaw of es) {
+      const i = Number(iRaw);
+      if (!Number.isFinite(i) || i < 0 || i >= srcCount) continue;
+      const k = String(i);
+      if (!mapping[k]) mapping[k] = [];
+      mapping[k].push(...enClean);
+    }
+  }
+
+  for (const k of Object.keys(mapping)) {
+    mapping[k] = Array.from(new Set(mapping[k]))
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x))
       .sort((a, b) => a - b);
+  }
+  return mapping;
+}
 
-    let tgtStart = null;
-    let tgtEnd = null;
-    if (filtered.length) {
-      // Ensure we don't leave gaps in the English side.
-      // If the next aligned token is ahead of our next target, start at nextTgtTok.
-      tgtStart = Math.min(filtered[0], nextTgtTok);
-      tgtEnd = tgtStart;
-      for (let k = 1; k < filtered.length; k += 1) {
-        if (filtered[k] === tgtEnd + 1) tgtEnd = filtered[k];
-        else break;
-      }
-    } else if (nextTgtTok < tgtCount) {
-      tgtStart = nextTgtTok;
-      tgtEnd = nextTgtTok;
+function buildStepPlanFromGroups(groups) {
+  const steps = [];
+  const g = Array.isArray(groups) ? groups : [];
+
+  for (const group of g) {
+    const esIdxs = (Array.isArray(group?.es) ? group.es : [])
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x));
+    const enIdxs = (Array.isArray(group?.en) ? group.en : [])
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x));
+
+    let spRange = { start: 0, end: 0 };
+    let enRange = { start: 0, end: 0 };
+
+    if (esIdxs.length && spTokenRanges.length) {
+      const s = Math.max(0, Math.min(spTokenRanges.length - 1, Math.min(...esIdxs)));
+      const e = Math.max(0, Math.min(spTokenRanges.length - 1, Math.max(...esIdxs)));
+      spRange = tokenCharRange(spText, spTokenRanges, s, e);
     }
 
-    if (tgtStart !== null && tgtEnd !== null) {
-      nextTgtTok = Math.min(tgtCount, tgtEnd + 1);
-    }
-
-    const spRange = tokenCharRange(spText, spTokenRanges, srcTok, srcTok);
-    let enRange = { start: enText.length, end: enText.length };
-    if (tgtStart !== null && tgtEnd !== null && tgtCount) {
-      const s = Math.max(0, Math.min(tgtCount - 1, tgtStart));
-      const e = Math.max(0, Math.min(tgtCount - 1, tgtEnd));
+    if (enIdxs.length && enTokenRanges.length) {
+      const s = Math.max(0, Math.min(enTokenRanges.length - 1, Math.min(...enIdxs)));
+      const e = Math.max(0, Math.min(enTokenRanges.length - 1, Math.max(...enIdxs)));
       enRange = tokenCharRange(enText, enTokenRanges, s, e);
     }
 
-    steps.push({
-      spStart: spRange.start,
-      spEnd: spRange.end,
-      enStart: enRange.start,
-      enEnd: enRange.end,
-    });
+    steps.push({ spStart: spRange.start, spEnd: spRange.end, enStart: enRange.start, enEnd: enRange.end });
   }
 
-  // If English has remaining tokens, append them to the final English group.
-  if (steps.length && nextTgtTok < tgtCount) {
-    const last = steps[steps.length - 1];
-    const tail = tokenCharRange(enText, enTokenRanges, nextTgtTok, tgtCount - 1);
-    last.enEnd = Math.max(last.enEnd, tail.end);
+  return steps;
+}
+
+function buildStepPlanFromAlignment(align) {
+  const srcCount = spTokenRanges.length;
+  const tgtCount = enTokenRanges.length;
+  if (srcCount === 0 && tgtCount === 0) return [];
+
+  const alignMap = (align && Object.keys(align).length) ? align : buildFallbackAlignment(srcCount, tgtCount);
+
+  // Build cleaned src->tgt edges.
+  const srcToTgt = new Array(srcCount).fill(null).map(() => []);
+  for (let i = 0; i < srcCount; i += 1) {
+    const raw = Array.isArray(alignMap[String(i)]) ? alignMap[String(i)] : [];
+    const cleaned = raw
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x) && x >= 0 && x < tgtCount);
+    // Ensure every source token participates (prevents “dead zones”).
+    if (!cleaned.length && tgtCount) {
+      const denom = Math.max(1, srcCount - 1);
+      const j = Math.round((i * (tgtCount - 1)) / denom);
+      srcToTgt[i] = [Math.max(0, Math.min(tgtCount - 1, j))];
+    } else {
+      srcToTgt[i] = Array.from(new Set(cleaned)).sort((a, b) => a - b);
+    }
+  }
+
+  // Build tgt->src edges (invert).
+  const tgtToSrc = new Array(tgtCount).fill(null).map(() => []);
+  for (let i = 0; i < srcCount; i += 1) {
+    for (const j of srcToTgt[i]) tgtToSrc[j].push(i);
+  }
+  for (let j = 0; j < tgtCount; j += 1) {
+    tgtToSrc[j] = Array.from(new Set(tgtToSrc[j])).sort((a, b) => a - b);
+  }
+
+  // Ensure every target token participates too.
+  if (srcCount && tgtCount) {
+    for (let j = 0; j < tgtCount; j += 1) {
+      if (tgtToSrc[j].length) continue;
+      const denom = Math.max(1, tgtCount - 1);
+      const i = Math.round((j * (srcCount - 1)) / denom);
+      const ii = Math.max(0, Math.min(srcCount - 1, i));
+      srcToTgt[ii].push(j);
+      srcToTgt[ii] = Array.from(new Set(srcToTgt[ii])).sort((a, b) => a - b);
+      tgtToSrc[j] = [ii];
+    }
+  }
+
+  // Build phrase-like groups as connected components in the bipartite graph.
+  const seenSrc = new Array(srcCount).fill(false);
+  const seenTgt = new Array(tgtCount).fill(false);
+  const groups = [];
+
+  function pushGroup(srcList, tgtList) {
+    const srcMin = srcList.length ? Math.min(...srcList) : 0;
+    const srcMax = srcList.length ? Math.max(...srcList) : Math.max(0, srcCount - 1);
+    const tgtMin = tgtList.length ? Math.min(...tgtList) : 0;
+    const tgtMax = tgtList.length ? Math.max(...tgtList) : Math.max(0, tgtCount - 1);
+    groups.push({ srcMin, srcMax, tgtMin, tgtMax });
+  }
+
+  for (let i0 = 0; i0 < srcCount; i0 += 1) {
+    if (seenSrc[i0]) continue;
+    const q = [{ t: 's', i: i0 }];
+    const srcList = [];
+    const tgtList = [];
+    seenSrc[i0] = true;
+
+    while (q.length) {
+      const cur = q.pop();
+      if (cur.t === 's') {
+        srcList.push(cur.i);
+        for (const j of srcToTgt[cur.i] || []) {
+          if (seenTgt[j]) continue;
+          seenTgt[j] = true;
+          q.push({ t: 't', i: j });
+        }
+      } else {
+        tgtList.push(cur.i);
+        for (const i of tgtToSrc[cur.i] || []) {
+          if (seenSrc[i]) continue;
+          seenSrc[i] = true;
+          q.push({ t: 's', i });
+        }
+      }
+    }
+
+    pushGroup(srcList, tgtList);
+  }
+
+  // Any remaining unseen targets become singleton-ish groups.
+  for (let j0 = 0; j0 < tgtCount; j0 += 1) {
+    if (seenTgt[j0]) continue;
+    seenTgt[j0] = true;
+    const denom = Math.max(1, tgtCount - 1);
+    const i = srcCount ? Math.round((j0 * (srcCount - 1)) / denom) : 0;
+    pushGroup([Math.max(0, Math.min(srcCount - 1, i))], [j0]);
+  }
+
+  // Sort and merge overlapping/adjacent groups in source order.
+  groups.sort((a, b) => (a.srcMin - b.srcMin) || (a.tgtMin - b.tgtMin));
+  const merged = [];
+  for (const g of groups) {
+    if (!merged.length) {
+      merged.push({ ...g });
+      continue;
+    }
+    const last = merged[merged.length - 1];
+    const overlapsSrc = g.srcMin <= last.srcMax + 1;
+    const overlapsTgt = g.tgtMin <= last.tgtMax + 1;
+    if (overlapsSrc && overlapsTgt) {
+      last.srcMin = Math.min(last.srcMin, g.srcMin);
+      last.srcMax = Math.max(last.srcMax, g.srcMax);
+      last.tgtMin = Math.min(last.tgtMin, g.tgtMin);
+      last.tgtMax = Math.max(last.tgtMax, g.tgtMax);
+    } else {
+      merged.push({ ...g });
+    }
+  }
+
+  // Convert token groups -> char ranges.
+  const steps = [];
+  for (const g of merged) {
+    const spRange = srcCount
+      ? tokenCharRange(spText, spTokenRanges, g.srcMin, g.srcMax)
+      : { start: 0, end: spText.length };
+    const enRange = tgtCount
+      ? tokenCharRange(enText, enTokenRanges, g.tgtMin, g.tgtMax)
+      : { start: 0, end: enText.length };
+    steps.push({ spStart: spRange.start, spEnd: spRange.end, enStart: enRange.start, enEnd: enRange.end });
+  }
+
+  // Ensure we cover full spans at the extremes.
+  if (steps.length) {
+    steps[0].spStart = 0;
+    steps[0].enStart = 0;
+    steps[steps.length - 1].spEnd = spText.length;
+    steps[steps.length - 1].enEnd = enText.length;
   }
 
   return steps;
@@ -488,13 +633,19 @@ function buildSpansForReference(referenceText, containerEl) {
   return { spans, endEl };
 }
 
-function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive, groupStart, groupEnd) {
+function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive, groupStart, groupEnd, underlineStart, underlineEnd) {
   for (let i = 0; i < spans.length; i += 1) {
     const span = spans[i];
-    span.classList.remove('correct', 'incorrect', 'cursor', 'group');
+    span.classList.remove('correct', 'incorrect', 'cursor', 'group', 'xlate');
 
     if (isActive && Number.isFinite(groupStart) && Number.isFinite(groupEnd)) {
       if (i >= groupStart && i < groupEnd) span.classList.add('group');
+    }
+
+    if (!isActive && Number.isFinite(underlineStart) && Number.isFinite(underlineEnd)) {
+      if (i >= underlineStart && i < underlineEnd && !span.classList.contains('ws')) {
+        span.classList.add('xlate');
+      }
     }
 
     if (typedBuffer[i] !== undefined) {
@@ -523,6 +674,8 @@ function updateRenderFromBuffers() {
     activeLang === 'sp',
     spGroupStart,
     spGroupEnd,
+    activeLang === 'en' ? spGroupStart : null,
+    activeLang === 'en' ? spGroupEnd : null,
   );
   renderTypingRow(
     enText,
@@ -533,7 +686,139 @@ function updateRenderFromBuffers() {
     activeLang === 'en',
     enGroupStart,
     enGroupEnd,
+    activeLang === 'sp' ? enGroupStart : null,
+    activeLang === 'sp' ? enGroupEnd : null,
   );
+}
+
+function computeTokenBoxes(tokenRanges, charSpans) {
+  // Returns { center, width } for each token, relative to #sentenceWrap.
+  const wrap = document.getElementById('sentenceWrap');
+  if (!wrap) return [];
+  const wrapRect = wrap.getBoundingClientRect();
+  const boxes = [];
+
+  for (const r of tokenRanges) {
+    const startIdx = Math.max(0, Math.min(r.start, charSpans.length - 1));
+    const endIdx = Math.max(0, Math.min(r.end - 1, charSpans.length - 1));
+    const a = charSpans[startIdx];
+    const b = charSpans[endIdx];
+    if (!a || !b) {
+      boxes.push({ center: wrapRect.width / 2, width: 0 });
+      continue;
+    }
+    const ra = a.getBoundingClientRect();
+    const rb = b.getBoundingClientRect();
+    const left = Math.min(ra.left, rb.left);
+    const right = Math.max(ra.right, rb.right);
+    boxes.push({ center: ((left + right) / 2) - wrapRect.left, width: Math.max(0, right - left) });
+  }
+  return boxes;
+}
+
+function computeBoundaryWhitespaceSpans(referenceText, tokenRanges, charSpans) {
+  const spans = [];
+  for (let i = 0; i < tokenRanges.length - 1; i += 1) {
+    const wsStart = tokenRanges[i].end;
+    const span = charSpans[wsStart];
+    if (span && /\s/.test(referenceText[wsStart] || '')) spans.push(span);
+    else spans.push(null);
+  }
+  return spans;
+}
+
+function resetSpacing(spaceSpans) {
+  for (const s of spaceSpans) {
+    if (!s) continue;
+    s.style.width = '';
+    s.style.display = '';
+  }
+}
+
+function buildTgtToSrcMap(align) {
+  const tgtToSrc = {};
+  const a = align || {};
+  for (const [srcIdxStr, tgtList] of Object.entries(a)) {
+    const srcIdx = Number(srcIdxStr);
+    if (!Number.isFinite(srcIdx)) continue;
+    if (!Array.isArray(tgtList)) continue;
+    for (const j of tgtList) {
+      const jj = Number(j);
+      if (!Number.isFinite(jj)) continue;
+      const k = String(jj);
+      if (!tgtToSrc[k]) tgtToSrc[k] = [];
+      tgtToSrc[k].push(srcIdx);
+    }
+  }
+  return tgtToSrc;
+}
+
+function spreadSpanishForEnglish() {
+  if (!currentItem) return;
+  const align = currentItem.align || {};
+  if (!Object.keys(align).length) return;
+  if (!spTokenRanges.length || !enTokenRanges.length) return;
+  if (!spCharSpans.length || !enCharSpans.length) return;
+
+  // Start from default spacing each time (avoid accumulating widths).
+  resetSpacing(spBoundarySpaceSpans);
+
+  spBoundarySpaceSpans = computeBoundaryWhitespaceSpans(spText, spTokenRanges, spCharSpans);
+
+  const spBoxes = computeTokenBoxes(spTokenRanges, spCharSpans);
+  const enBoxes = computeTokenBoxes(enTokenRanges, enCharSpans);
+  if (!spBoxes.length || !enBoxes.length) return;
+
+  const tgtToSrc = buildTgtToSrcMap(align);
+  const enWidths = enBoxes.map((b) => b.width);
+
+  const maxEnBySrc = new Array(spBoxes.length).fill(0);
+  for (let j = 0; j < enWidths.length; j += 1) {
+    const srcList = tgtToSrc[String(j)] || [];
+    if (!srcList.length) continue;
+    const w = enWidths[j] || 0;
+    for (const i of srcList) {
+      if (i >= 0 && i < maxEnBySrc.length) maxEnBySrc[i] = Math.max(maxEnBySrc[i], w);
+    }
+  }
+
+  const baseGap = 18;
+  const pad = 16;
+  const desiredWidth = spBoxes.map((b, i) => Math.max(b.width, maxEnBySrc[i] + pad));
+
+  const targetCenters = new Array(spBoxes.length).fill(0);
+  targetCenters[0] = spBoxes[0].center;
+  for (let i = 1; i < spBoxes.length; i += 1) {
+    const prev = targetCenters[i - 1];
+    const delta = (desiredWidth[i - 1] / 2) + (desiredWidth[i] / 2) + baseGap;
+    targetCenters[i] = prev + delta;
+  }
+
+  const natFirst = spBoxes[0].center;
+  const natLast = spBoxes[spBoxes.length - 1].center;
+  const tgtFirst = targetCenters[0];
+  const tgtLast = targetCenters[targetCenters.length - 1];
+  const natMid = (natFirst + natLast) / 2;
+  const tgtMid = (tgtFirst + tgtLast) / 2;
+  const shiftAll = natMid - tgtMid;
+  for (let i = 0; i < targetCenters.length; i += 1) targetCenters[i] += shiftAll;
+
+  const shifts = spBoxes.map((b, i) => targetCenters[i] - b.center);
+  const spreadFactor = 1.6;
+
+  for (let i = 0; i < spBoundarySpaceSpans.length; i += 1) {
+    const span = spBoundarySpaceSpans[i];
+    if (!span) continue;
+
+    const deltaShift = (shifts[i + 1] ?? 0) - (shifts[i] ?? 0);
+    const extra = Math.max(0, deltaShift) * spreadFactor;
+    if (extra <= 0.5) continue;
+
+    const rect = span.getBoundingClientRect();
+    const baseW = Math.max(2, rect.width || 0);
+    span.style.display = 'inline-block';
+    span.style.width = `${(baseW + extra).toFixed(1)}px`;
+  }
 }
 function updateAlignmentForCurrentSentence(alignPayload) {
   if (!currentItem) return;
@@ -549,15 +834,16 @@ function updateAlignmentForCurrentSentence(alignPayload) {
   setCurrentStep(stepIndex);
   advanceIfNeeded();
   updateRenderFromBuffers();
+
+  // Re-apply spacing once the real alignment arrives (needs layout).
+  requestAnimationFrame(() => {
+    spreadSpanishForEnglish();
+  });
 }
 
 async function fetchAlignment(spId) {
-  try {
-    const payload = await fetchJson(`/api/learn/align?sp_id=${encodeURIComponent(String(spId))}`);
-    updateAlignmentForCurrentSentence(payload);
-  } catch {
-    // Ignore alignment errors; the round can continue without highlighting.
-  }
+  // No-op: learn-language now reads precomputed groups from the local JSONL dataset.
+  void spId;
 }
 
 function advanceIfNeeded() {
@@ -608,8 +894,15 @@ function startSentence(item) {
   inputEnabled = true;
   hasTypedAny = false;
 
-  spText = String(item.spanish || '');
-  enText = String(item.english || '');
+  const esTokens = Array.isArray(item?.es)
+    ? item.es.map((x) => String(x))
+    : String(item?.spanish || '').split(/\s+/).filter(Boolean);
+  const enTokens = Array.isArray(item?.en)
+    ? item.en.map((x) => String(x))
+    : String(item?.english || '').split(/\s+/).filter(Boolean);
+
+  spText = esTokens.join(' ');
+  enText = enTokens.join(' ');
 
   spTypedBuffer = [];
   enTypedBuffer = [];
@@ -627,7 +920,9 @@ function startSentence(item) {
   spTokenRanges = computeTokenRanges(spText);
   enTokenRanges = computeTokenRanges(enText);
 
-  stepPlan = buildStepPlanFromAlignment(item.align || {});
+  spBoundarySpaceSpans = computeBoundaryWhitespaceSpans(spText, spTokenRanges, spCharSpans);
+
+  stepPlan = buildStepPlanFromGroups(item.groups || []);
   if (!stepPlan.length) {
     stepPlan = [{ spStart: 0, spEnd: spText.length, enStart: 0, enEnd: enText.length }];
   }
@@ -636,13 +931,20 @@ function startSentence(item) {
   spCursorIndex = spGroupStart;
   enCursorIndex = enGroupStart;
 
+  // Derive an alignment-like mapping for spacing adjustments.
+  currentItem.align = buildAlignFromGroups(item.groups || [], spTokenRanges.length, enTokenRanges.length);
+
   setMeta('');
-  if (item.sp_id) fetchAlignment(item.sp_id);
 
   el.retryBtn.disabled = false;
   setActiveLang('sp');
   advanceIfNeeded();
   updateRenderFromBuffers();
+
+  // Apply spacing immediately using any cached alignment (or none).
+  requestAnimationFrame(() => {
+    spreadSpanishForEnglish();
+  });
 }
 
 async function fetchJson(url) {
@@ -655,12 +957,34 @@ async function fetchJson(url) {
   return data;
 }
 
+async function ensureDatasetLoaded() {
+  if (Array.isArray(datasetItems) && datasetItems.length) return;
+  setMeta('Loading dataset…');
+  const res = await fetch('/static/trimmed_sentence_groups.jsonl', { headers: { 'Accept': 'text/plain' } });
+  if (!res.ok) throw new Error(`Failed to load dataset (${res.status})`);
+  const text = await res.text();
+  const items = [];
+  for (const line of text.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      const obj = JSON.parse(s);
+      if (!obj || typeof obj !== 'object') continue;
+      if (!Array.isArray(obj.es) || !Array.isArray(obj.en) || !Array.isArray(obj.groups)) continue;
+      items.push(obj);
+    } catch {
+      // Ignore bad lines.
+    }
+  }
+  datasetItems = items;
+  setMeta(items.length ? `Dataset loaded (${items.length})` : 'Dataset empty');
+}
+
 async function loadRandomSentence() {
-  setMeta('Loading…');
-  const data = await fetchJson('/api/learn/random?count=1');
-  const items = data.items || [];
-  if (!items.length) throw new Error('No sentence pairs available');
-  startSentence(items[0]);
+  await ensureDatasetLoaded();
+  if (!datasetItems || !datasetItems.length) throw new Error('Dataset is empty');
+  const idx = Math.floor(Math.random() * datasetItems.length);
+  startSentence(datasetItems[idx]);
 }
 
 function startNewRound() {

@@ -56,6 +56,10 @@ h1 {
   background: rgba(0, 0, 0, 0.06);
 }
 
+.ch.xlate {
+  border-bottom: 2px solid #111;
+}
+
 .ch.incorrect {
   color: #111;
   background: #ffd6d6;
