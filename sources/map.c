@@ -3,21 +3,14 @@
 #include <string.h>
 
 #if defined(__SDCC)
-// // FUTURE: tilemap compression
+
 #include <gb/gbdecompress.h>
 
-// Helper buffers for tile streaming
 UINT8 col_tiles[COL_HEIGHT];
 UINT8 row_tiles[ROW_WIDTH];
 UINT8 col_attrs[COL_HEIGHT];
 UINT8 row_attrs[ROW_WIDTH];
 #endif
-
-// -----------------------------------------------------------------------------
-// Collision
-// -----------------------------------------------------------------------------
-// Host unit tests need a way to paint collision without depending on the
-// real macro tilemap data. Provide a simple host-only collision grid.
 
 #ifndef __SDCC
 
@@ -58,9 +51,6 @@ static TilemapCursor g_tile_cursor_query;
 
 static UINT8 map_get_block_type_at_tile(UINT16 map_tile_x, UINT16 map_tile_y) {
 
-    // DEBUG remove
-    // return map_tile_y > 120 ? MAP_BLOCKTYPE_SOLID : MAP_BLOCKTYPE_AIR;
-
 #ifdef __SDCC
     UINT8 old_bank = _current_bank;
     SWITCH_ROM(TILEMAP_MAP_BANK);
@@ -78,7 +68,6 @@ BOOLEAN map_is_solid_at(UINT16 map_tile_x, UINT16 map_tile_y) {
     return map_get_block_type_at_tile(map_tile_x, map_tile_y) == MAP_BLOCKTYPE_SOLID;
 }
 
-// Separate cursors so row/column streaming doesn't thrash the leaf cache.
 static TilemapCursor g_tile_cursor_row;
 static TilemapCursor g_tile_cursor_col;
 
@@ -90,16 +79,12 @@ void update_column(Map* map, UINT8 rel_x, UINT16 map_tile_y_start) {
 
     UINT8 old_bank = _current_bank;
 
-    // Read tile ids + attrs from the tile stream (same bank, interleaved)
     SWITCH_ROM(TILEMAP_MAP_BANK);
     uint16_t idx = tilemap_stream_seek_xy(&g_tile_cursor_col, (uint8_t)map->tile_x + rel_x, (uint8_t)map_tile_y_start);
 
-    // Seek returns the index of the first tile.
     col_tiles[0] = MACROTILES_IDS[idx];
     col_attrs[0] = MACROTILES_ATTRS[idx];
 
-    // Keep the cursor anchored at the scan start so future seeks reuse a nearby path.
-    // (Column updates are called repeatedly with changing X, but usually the same Y start.)
     {
         TilemapCursor start_cursor;
         memcpy(&start_cursor, &g_tile_cursor_col, sizeof(start_cursor));
@@ -112,18 +97,16 @@ void update_column(Map* map, UINT8 rel_x, UINT16 map_tile_y_start) {
     }
     SWITCH_ROM(old_bank);
 
-    // Write tiles
     VBK_REG = VBK_TILES;
     set_bkg_tiles(vram_x, vram_y_start, 1, COL_HEIGHT, col_tiles);
 
-    // Write attributes
     VBK_REG = VBK_ATTRIBUTES;
     set_bkg_tiles(vram_x, vram_y_start, 1, COL_HEIGHT, col_attrs);
 }
 
 void update_row(
     Map* map,
-    UINT8 rel_y,     // Offset from map->tile_y in pixels
+    UINT8 rel_y,
     UINT16 map_tile_x_start
 ) {
 
@@ -134,16 +117,12 @@ void update_row(
 
     UINT8 old_bank = _current_bank;
 
-    // Read tile ids + attrs from the tile stream (same bank, interleaved)
     SWITCH_ROM(TILEMAP_MAP_BANK);
     uint16_t idx = tilemap_stream_seek_xy(&g_tile_cursor_row, (uint8_t)map_tile_x_start, (uint8_t)map->tile_y + rel_y);
 
-    // Seek returns the index of the first tile.
     row_tiles[0] = MACROTILES_IDS[idx];
     row_attrs[0] = MACROTILES_ATTRS[idx];
 
-    // Keep the cursor anchored at the scan start so future seeks reuse a nearby path.
-    // (Row updates are called repeatedly with changing Y, but usually the same X start.)
     {
         TilemapCursor start_cursor;
         memcpy(&start_cursor, &g_tile_cursor_row, sizeof(start_cursor));
@@ -156,11 +135,9 @@ void update_row(
     }
     SWITCH_ROM(old_bank);
 
-    // Write tiles
     VBK_REG = VBK_TILES;
     set_bkg_tiles(vram_x_start, vram_y, ROW_WIDTH, 1, row_tiles);
 
-    // Write attributes
     VBK_REG = VBK_ATTRIBUTES;
     set_bkg_tiles(vram_x_start, vram_y, ROW_WIDTH, 1, row_attrs);
 }
@@ -183,15 +160,14 @@ void map_init(Map* map) {
     map->vram_y_top = 0;
 
 #if defined(__SDCC)
-    // Initialize tilemap cursor state (no-op for the RLE cursor).
+
     tilemap_cursor_init(&g_tile_cursor_row);
     tilemap_cursor_init(&g_tile_cursor_col);
     tilemap_cursor_init(&g_tile_cursor_query);
 
-    // Load tileset into VRAM
     gb_decompress_bkg_data(0, tileset_comp);
     VBK_REG = VBK_TILES;
-    // tileset_palette is 8 palettes × 4 colors.
+
     set_bkg_palette(0, 8, tileset_palette);
 #else
     memset(g_host_block_types, 0, sizeof(g_host_block_types));
@@ -205,55 +181,49 @@ void map_set_scroll_immediate(Map* map, INT16 new_scroll_x, INT16 new_scroll_y) 
 
     map->tile_x = (UINT16)((UINT16)new_scroll_x >> 3);
     map->tile_y = (UINT16)((UINT16)new_scroll_y >> 3);
-    map->tile_offset_x = (INT8)((UINT16)new_scroll_x & 0b0111);  // remainder (mod 8)
-    map->tile_offset_y = (INT8)((UINT16)new_scroll_y & 0b0111);  // remainder (mod 8)
+    map->tile_offset_x = (INT8)((UINT16)new_scroll_x & 0b0111);
+    map->tile_offset_y = (INT8)((UINT16)new_scroll_y & 0b0111);
 
-    // VRAM ring origin is tracked in tile units (0..31), not pixels.
-    // So the correct initial alignment is (tile_x mod 32, tile_y mod 32).
     map->vram_x_left = (UINT8)(map->tile_x & VRAM_WIDTH_MINUS_1);
     map->vram_y_top = (UINT8)(map->tile_y & VRAM_HEIGHT_MINUS_1);
 }
 
 void map_set_scroll(Map* map, INT16 new_scroll_x, INT16 new_scroll_y) {
 
-    // Calculate delta from current scroll position
     INT16 delta_x = new_scroll_x - map->scroll_x;
     INT16 delta_y = new_scroll_y - map->scroll_y;
 
-    // Update scroll position
     map->scroll_x = new_scroll_x;
     map->scroll_y = new_scroll_y;
-    
-    // Handle horizontal scrolling
+
     if (delta_x > 0) {
-        // Scrolling right
-        map->tile_offset_x += delta_x;  // delta_x is positive
+
+        map->tile_offset_x += delta_x;
         while (map->tile_offset_x >= 8) {
             map->tile_offset_x -= 8;
             map->tile_x++;
-            map->vram_x_left = (map->vram_x_left + 1) & (VRAM_WIDTH_MINUS_1);  // mod 32
-            
+            map->vram_x_left = (map->vram_x_left + 1) & (VRAM_WIDTH_MINUS_1);
+
 #if defined(__SDCC)
             update_column(map, SCREEN_TILES_W, map->tile_y);
 #endif
         }
     } else if (delta_x < 0) {
-        // Scrolling left
-        map->tile_offset_x += delta_x;  // delta_x is negative
+
+        map->tile_offset_x += delta_x;
         while (map->tile_offset_x < 0) {
             map->tile_offset_x += 8;
             map->tile_x--;
-            map->vram_x_left = (map->vram_x_left - 1) & (VRAM_WIDTH_MINUS_1);  // mod 32
+            map->vram_x_left = (map->vram_x_left - 1) & (VRAM_WIDTH_MINUS_1);
 
 #if defined(__SDCC)
             update_column(map, 0, map->tile_y);
 #endif
         }
     }
-    
-    // Handle vertical scrolling
+
     if (delta_y > 0) {
-        // Scrolling down (view scrolls down)
+
         map->tile_offset_y += delta_y;
         while (map->tile_offset_y >= 8) {
             map->tile_offset_y -= 8;
@@ -265,7 +235,7 @@ void map_set_scroll(Map* map, INT16 new_scroll_x, INT16 new_scroll_y) {
 #endif
         }
     } else if (delta_y < 0) {
-        // Scrolling up (view scrolls up)
+
         map->tile_offset_y += delta_y;
         while (map->tile_offset_y < 0) {
             map->tile_offset_y += 8;

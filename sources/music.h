@@ -4,10 +4,8 @@
 #include <gb/gb.h>
 #include <gbdk/platform.h>
 
-// Initialize music system
 void music_init(void);
 
-// VBL handler installed by music_init()
 void vbl_music(void) NONBANKED;
 
-#endif // _MUSIC_H_
+#endif

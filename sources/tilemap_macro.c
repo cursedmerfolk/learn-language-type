@@ -6,8 +6,7 @@
 #include <sys/time.h>
 
 static uint64_t now_ns(void) {
-    // Fallback timer: lower resolution and subject to wall-clock adjustments,
-    // but sufficient for coarse host-side profiling.
+
     struct timeval tv;
     gettimeofday(&tv, 0);
     return ((uint64_t)tv.tv_sec * 1000000000ull) + ((uint64_t)tv.tv_usec * 1000ull);
@@ -26,7 +25,6 @@ static uint32_t g_calls[INSTR_COUNT];
 static uint64_t g_total_ns[INSTR_COUNT];
 static uint64_t g_excl_ns[INSTR_COUNT];
 
-// Simple nesting tracker for exclusive-time accounting.
 static uint8_t g_stack[16];
 static uint64_t g_stack_t0[16];
 static uint8_t g_sp;
@@ -46,7 +44,7 @@ static void instr_exit(uint8_t id) {
         return;
     }
     g_sp--;
-    // Trust the stack for performance; if it doesn't match, still record inclusive time.
+
     uint64_t t0 = g_stack_t0[g_sp];
     uint64_t dt = (t1 >= t0) ? (t1 - t0) : 0ull;
 
@@ -110,7 +108,6 @@ const char* tilemap_macro_instr_func_name(uint8_t func_id) {
 
 #elif defined(TILEMAP_MACRO_INSTRUMENT)
 
-// SDCC build: provide stubs so code still links if enabled accidentally.
 void tilemap_macro_instr_reset(void) {}
 uint8_t tilemap_macro_instr_func_count(void) { return 0u; }
 uint32_t tilemap_macro_instr_call_count(uint8_t func_id) {
@@ -138,8 +135,7 @@ uint64_t tilemap_macro_instr_excl_ns(uint8_t func_id) {
 
 static uint16_t macrotile_base_for_id(uint8_t id) {
     INSTR_ENTER(0);
-    // Each macrotile is TILEMAP_MACRO_MACROTILE_CELLS cells.
-    // For 3x3: 9 == (id<<3) + id
+
     uint16_t base = (uint16_t)(((uint16_t)id << 3) + (uint16_t)id);
     INSTR_EXIT(0);
     return base;
@@ -165,8 +161,6 @@ uint16_t tilemap_macro_seek_xy(TilemapMacroCursor* c, uint8_t x, uint8_t y) {
     c->my = TILEMAP_MACRO_Y_TO_MY[y];
     c->oy = TILEMAP_MACRO_Y_TO_OY[y];
 
-    // cell = oy*3 + ox
-    // 3*oy == (oy<<1) + oy
     c->cell = (uint8_t)((uint8_t)((c->oy << 1) + c->oy) + c->ox);
 
     {
@@ -175,8 +169,6 @@ uint16_t tilemap_macro_seek_xy(TilemapMacroCursor* c, uint8_t x, uint8_t y) {
         c->macro_base = macrotile_base_for_id(*c->macro_id_ptr);
     }
 
-    // Return the *dictionary cell* index for the tile at (x,y).
-    // This is the index into MACROTILES_IDS/MACROTILES_ATTRS.
     uint16_t idx = (uint16_t)(c->macro_base + (uint16_t)c->cell);
 
     INSTR_EXIT(2);
@@ -190,7 +182,7 @@ uint16_t tilemap_macro_next_right(TilemapMacroCursor* c) {
     if ((uint8_t)(c->ox + 1u) >= TILEMAP_MACRO_GROUP_SIDE) {
         c->ox = 0;
         c->mx++;
-        // Wrapped within the 3x3: reset cell to oy*3.
+
         c->cell = (uint8_t)((c->oy << 1) + c->oy);
         c->macro_id_ptr++;
         c->macro_base = macrotile_base_for_id(*c->macro_id_ptr);
@@ -199,7 +191,6 @@ uint16_t tilemap_macro_next_right(TilemapMacroCursor* c) {
         c->cell++;
     }
 
-    // Return current cell.
     uint16_t idx = (uint16_t)(c->macro_base + (uint16_t)c->cell);
 
     INSTR_EXIT(3);
@@ -212,7 +203,7 @@ uint16_t tilemap_macro_next_down(TilemapMacroCursor* c) {
     if ((uint8_t)(c->oy + 1u) >= TILEMAP_MACRO_GROUP_SIDE) {
         c->oy = 0;
         c->my++;
-        // Wrapped within the 3x3: reset cell to ox.
+
         c->cell = c->ox;
         c->macro_id_ptr = &c->macro_id_ptr[TILEMAP_MACRO_WIDTH];
         c->macro_base = macrotile_base_for_id(*c->macro_id_ptr);
@@ -221,11 +212,10 @@ uint16_t tilemap_macro_next_down(TilemapMacroCursor* c) {
         c->cell = (uint8_t)(c->cell + 3u);
     }
 
-    // Return current cell.
     uint16_t idx = (uint16_t)(c->macro_base + (uint16_t)c->cell);
 
     INSTR_EXIT(4);
     return idx;
 }
 
-#endif // TILEMAP_MACRO
+#endif

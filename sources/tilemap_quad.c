@@ -9,7 +9,7 @@
 typedef enum TilemapQuadInstrFuncId {
     TQI_msb_index_u8 = 0,
     TQI_ensure_cached,
-    // Sub-section timing within ensure_cached()
+
     TQI_csm_cache_check,
     TQI_csm_finger_seek,
     TQI_csm_start_node,
@@ -46,16 +46,12 @@ static uint32_t g_tqi_calls[TQI_FUNC_COUNT];
 static uint64_t g_tqi_total_ns[TQI_FUNC_COUNT];
 static uint64_t g_tqi_excl_ns[TQI_FUNC_COUNT];
 
-// Traversal loop iteration stats for ensure_cached():
-// counts how many iterations the `while (level < K)` loop runs per non-cache-hit seek.
 static uint32_t g_tqi_traverse_calls;
 static uint32_t g_tqi_traverse_total_iters;
 static uint8_t g_tqi_traverse_max_iters;
-// Histogram indexed by iteration count (0..8), last bucket is "8+".
+
 static uint32_t g_tqi_traverse_hist[9];
 
-// Simple instrumentation call stack so nested calls work correctly.
-// Keep this small; we only ever nest a few levels.
 #ifndef TILEMAP_QUAD_INSTR_STACK_MAX
 #define TILEMAP_QUAD_INSTR_STACK_MAX 32
 #endif
@@ -82,7 +78,7 @@ static void tilemap_quad_instr_enter(uint8_t func_id) {
 static void tilemap_quad_instr_exit(uint8_t func_id) {
     if (g_tqi_sp == 0u) return;
     g_tqi_sp--;
-    // If mismatched, still attribute time to the popped id.
+
     uint8_t popped_id = g_tqi_stack_ids[g_tqi_sp];
     uint64_t start_ns = g_tqi_stack_start_ns[g_tqi_sp];
     uint64_t child_ns = g_tqi_stack_child_ns[g_tqi_sp];
@@ -96,7 +92,6 @@ static void tilemap_quad_instr_exit(uint8_t func_id) {
         g_tqi_excl_ns[popped_id] += excl;
     }
 
-    // Attribute the *inclusive* child time to the parent, for exclusive-time accounting.
     if (g_tqi_sp != 0u) {
         uint8_t parent_sp = (uint8_t)(g_tqi_sp - 1u);
         g_tqi_stack_child_ns[parent_sp] += delta;
@@ -181,7 +176,7 @@ const char* tilemap_quad_instr_func_name(uint8_t func_id) {
 #define TQI_END(_id) tilemap_quad_instr_exit((uint8_t)(_id))
 #define TQI_RECORD_TRAVERSE_ITERS(_iters) tqi_record_traverse_iters((uint8_t)(_iters))
 
-#endif // !__SDCC
+#endif
 
 #else
 
@@ -189,18 +184,17 @@ const char* tilemap_quad_instr_func_name(uint8_t func_id) {
 #define TQI_END(_id) do { } while (0)
 #define TQI_RECORD_TRAVERSE_ITERS(_iters) do { (void)(_iters); } while (0)
 
-#endif // TILEMAP_QUAD_INSTRUMENT
+#endif
 
 static uint16_t macrotile_bytes_offset(uint8_t macrotile_id) {
-    // Assumption: TILEMAP_QUAD_MACROTILE_BYTES == 18
-    // 18 = 16 + 2
+
     uint16_t id = (uint16_t)macrotile_id;
     return (uint16_t)((id << 4) + (id << 1));
 }
 
 static uint8_t macro_cell_index(uint8_t ox, uint8_t oy) {
 #if TILEMAP_QUAD_GROUP_SIDE == 3
-    // oy is always 0..2 when GROUP_SIDE==3.
+
     static const uint8_t oy_base[3] = { 0u, 3u, 6u };
     return (uint8_t)(oy_base[oy] + ox);
 #else
@@ -209,12 +203,12 @@ static uint8_t macro_cell_index(uint8_t ox, uint8_t oy) {
 }
 
 static uint8_t macro_entry_offset(uint8_t cell) {
-    // Assumption: TILEMAP_QUAD_ENTRY_STRIDE == 2 (tile,attr)
+
     return (uint8_t)(cell << 1);
 }
 
 static uint16_t cursor_root_idx_from_mx_my(uint8_t mx, uint8_t my) {
-    // Assumption: TILEMAP_QUAD_SUBTREE_LOG2 == 2.
+
     uint8_t bx = (uint8_t)(mx >> 2);
     uint8_t by = (uint8_t)(my >> 2);
 #if TILEMAP_QUAD_SUBTREE_W_LOG2 != 255
@@ -225,9 +219,7 @@ static uint16_t cursor_root_idx_from_mx_my(uint8_t mx, uint8_t my) {
 }
 
 static void cursor_update_quad_path_from_mx_my(TilemapQuadCursor* c) {
-    // Assumption: TILEMAP_QUAD_SUBTREE_LOG2 == 2.
-    // K=2 is common in this project. Use a tiny LUT indexed by (my_local<<2)|mx_local.
-    // quad_path stores quad(level0) at bits 1:0 and quad(level1) at bits 3:2.
+
     static const uint8_t g_quad_path_u2_lut[16] = {
         0u, 4u, 1u, 5u,
         8u, 12u, 9u, 13u,
@@ -240,15 +232,13 @@ static void cursor_update_quad_path_from_mx_my(TilemapQuadCursor* c) {
 }
 
 static void cursor_update_seek_state(TilemapQuadCursor* c) {
-    // Full recompute after arbitrary seek.
+
     c->node_idx_stack[0] = cursor_root_idx_from_mx_my(c->mx, c->my);
     cursor_update_quad_path_from_mx_my(c);
 }
 
 static void cursor_update_macro_step_right(TilemapQuadCursor* c) {
-    // Called after c->mx++.
-    // Assumption: TILEMAP_QUAD_SUBTREE_LOG2 == 2.
-    // If we wrapped within-subtree x bits back to 0, we entered a new subtree column.
+
     if (((uint8_t)(c->mx & 3u)) == 0u) {
         c->node_idx_stack[0] = (uint16_t)(c->node_idx_stack[0] + 1u);
     }
@@ -257,9 +247,7 @@ static void cursor_update_macro_step_right(TilemapQuadCursor* c) {
 }
 
 static void cursor_update_macro_step_down(TilemapQuadCursor* c) {
-    // Called after c->my++.
-    // Assumption: TILEMAP_QUAD_SUBTREE_LOG2 == 2.
-    // If we wrapped within-subtree y bits back to 0, we entered a new subtree row.
+
     if (((uint8_t)(c->my & 3u)) == 0u) {
 #if TILEMAP_QUAD_SUBTREE_W_LOG2 != 255
     c->node_idx_stack[0] = (uint16_t)(c->node_idx_stack[0] + (uint16_t)(1u << TILEMAP_QUAD_SUBTREE_W_LOG2));
@@ -275,8 +263,6 @@ static void cursor_read_pair_cached(const TilemapQuadCursor* c, uint8_t* out_til
     if (out_tile) *out_tile = 0;
     if (out_attr) *out_attr = 0;
 
-    // Trust caller: cursor must be in-range and leaf cache must be valid.
-
     uint8_t cell = macro_cell_index(c->ox, c->oy);
     uint8_t off = macro_entry_offset(cell);
     if (out_tile) *out_tile = c->leaf_pat[(uint8_t)(off + TILEMAP_QUAD_ENTRY_TILE_OFF)];
@@ -286,25 +272,21 @@ static void cursor_read_pair_cached(const TilemapQuadCursor* c, uint8_t* out_til
 static void ensure_cached(TilemapQuadCursor* c) {
     TQI_BEGIN(TQI_ensure_cached);
 
-    // Assumption: TILEMAP_QUAD_SUBTREE_LOG2 == 2.
     uint8_t mx = c->mx;
     uint8_t my = c->my;
 
     TQI_BEGIN(TQI_csm_finger_seek);
-    // Finger seek within the current macro-subtree:
-    // - subtree depth is K (K decisions)
-    // - if macro coords moved to a different subtree (top bits changed), restart from level 0.
+
     uint8_t level = 0u;
     if (c->leaf_shift != 0xFFu) {
         uint8_t dx = (uint8_t)(mx ^ c->leaf_x);
         uint8_t dy = (uint8_t)(my ^ c->leaf_y);
         uint8_t diff = (uint8_t)(dx | dy);
-        // If the macro moved to a different subtree (top bits changed),
-        // we can't reuse a deeper node path.
+
         if ((uint8_t)(diff >> 2) != 0u) {
             level = 0u;
         } else {
-            // K=2 => diff_low in {0,1,2,3}. msb_index(diff_low) is 0 for {1}, 1 for {2,3}.
+
             uint8_t diff_low = (uint8_t)(diff & 3u);
             if (diff_low == 0u) {
                 level = c->depth;
@@ -322,7 +304,7 @@ static void ensure_cached(TilemapQuadCursor* c) {
     uint16_t idx;
     uint8_t rel;
     if (level == 0u) {
-        // Subtree root node index is cached at node_idx_stack[0].
+
         idx = c->node_idx_stack[0];
         rel = 0u;
     } else {
@@ -332,13 +314,11 @@ static void ensure_cached(TilemapQuadCursor* c) {
     TQI_END(TQI_csm_start_node);
 
     TQI_BEGIN(TQI_csm_traverse);
-    // Assumption: TILEMAP_QUAD_SUBTREE_LOG2 == 2.
-    // Unrolled traversal avoids variable shifts that SDCC tends to emit as slow loops.
+
 #if defined(TILEMAP_QUAD_INSTRUMENT)
     uint8_t traverse_iters = 0;
 #endif
 
-    // Level 0
     if (level == 0u) {
 #if defined(TILEMAP_QUAD_INSTRUMENT)
         traverse_iters++;
@@ -367,7 +347,6 @@ static void ensure_cached(TilemapQuadCursor* c) {
                 goto out;
             }
 
-            // Internal: advance to level 1
             idx = (uint16_t)(d + (uint16_t)(c->quad_path & 3u));
             c->node_idx_stack[1] = idx;
             level = 1u;
@@ -375,7 +354,6 @@ static void ensure_cached(TilemapQuadCursor* c) {
         }
     }
 
-    // Level 1
     if (level == 1u) {
 #if defined(TILEMAP_QUAD_INSTRUMENT)
         traverse_iters++;
@@ -404,7 +382,6 @@ static void ensure_cached(TilemapQuadCursor* c) {
                 goto out;
             }
 
-            // Internal: advance to level 2 (K)
             idx = (uint16_t)(d + (uint16_t)((c->quad_path >> 2) & 3u));
             c->node_idx_stack[2] = idx;
             level = 2u;
@@ -417,7 +394,6 @@ static void ensure_cached(TilemapQuadCursor* c) {
 #endif
     TQI_END(TQI_csm_traverse);
 
-    // Level == 2: implied full leaf level (explicit macro-tile patterns).
     TQI_BEGIN(TQI_csm_leafk_setup);
     {
         const uint8_t* base = TILEMAP_QUAD_LEAF_TILES_PTRS[2];
@@ -444,12 +420,12 @@ void tilemap_quad_init(TilemapQuadCursor* c) {
     c->quad_path = 0u;
     c->node_idx_stack[0] = 0u;
     c->leaf_pat = 0;
-    c->leaf_shift = 0xFFu; // invalid
+    c->leaf_shift = 0xFFu;
     c->leaf_inv_mask = 0u;
     c->depth = 0;
     c->leaf_x = 0;
     c->leaf_y = 0;
-    // node_idx_stack entries are initialized lazily by ensure_cached().
+
     TQI_END(TQI_tilemap_quad_init);
 }
 
@@ -463,7 +439,6 @@ void tilemap_quad_seek_xy(TilemapQuadCursor* c, uint8_t x, uint8_t y) {
 
     cursor_update_seek_state(c);
 
-    // Fast-path cache hit for arbitrary seek.
     TQI_BEGIN(TQI_csm_cache_check);
     if (c->leaf_shift != 0xFFu) {
         uint8_t inv = c->leaf_inv_mask;
@@ -489,7 +464,6 @@ void tilemap_quad_next_right(TilemapQuadCursor* c, uint8_t* out_tile, uint8_t* o
 
     cursor_read_pair_cached(c, out_tile, out_attr);
 
-    // Advance one linear tile.
     c->ox++;
 
     if (c->ox >= (uint8_t)TILEMAP_QUAD_GROUP_SIDE) {
@@ -498,7 +472,6 @@ void tilemap_quad_next_right(TilemapQuadCursor* c, uint8_t* out_tile, uint8_t* o
 
         cursor_update_macro_step_right(c);
 
-        // Fast-path cache hit for +X macro step.
         TQI_BEGIN(TQI_csm_cache_check);
         if (c->leaf_shift != 0xFFu) {
             uint8_t inv = c->leaf_inv_mask;
@@ -530,7 +503,6 @@ void tilemap_quad_next_down(TilemapQuadCursor* c, uint8_t* out_tile, uint8_t* ou
 
         cursor_update_macro_step_down(c);
 
-        // Fast-path cache hit for +Y macro step.
         TQI_BEGIN(TQI_csm_cache_check);
         if (c->leaf_shift != 0xFFu) {
             uint8_t inv = c->leaf_inv_mask;
@@ -550,4 +522,4 @@ void tilemap_quad_next_down(TilemapQuadCursor* c, uint8_t* out_tile, uint8_t* ou
     TQI_END(TQI_tilemap_quad_next_down);
 }
 
-#endif // TILEMAP_QUAD
+#endif
