@@ -15,16 +15,12 @@
       </section>
 
       <section class="pane" aria-label="Code to type">
-        <pre id="codeBlock" class="code" tabindex="0"></pre>
+        <pre id="typingBox" class="code typingbox" tabindex="0" role="textbox" aria-multiline="true" aria-label="Type the code shown"></pre>
       </section>
 
-      <section class="pane" aria-label="Typing input">
-        <label class="label" for="typingInput">Type here</label>
-        <textarea id="typingInput" class="input" rows="6" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="Start typing to begin the 30 second timer…"></textarea>
-        <div class="row">
-          <div class="muted">Time: <span id="timeLeft">30.0</span>s</div>
-          <div class="muted">Status: <span id="status">Waiting</span></div>
-        </div>
+      <section class="row" aria-label="Status">
+        <div class="muted">Time: <span id="timeLeft">30.0</span>s</div>
+        <div class="muted">Status: <span id="status">Waiting</span></div>
       </section>
 
       <section class="row actions" aria-label="Actions">

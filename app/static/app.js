@@ -4,10 +4,15 @@ let startTs = null;
 let timerInterval = null;
 const DURATION_MS = 30_000;
 
+let inputEnabled = true;
+let typedBuffer = [];
+let cursorIndex = 0;
+let charSpans = [];
+let cursorEndEl = null;
+
 const el = {
   chunkMeta: document.getElementById('chunkMeta'),
-  codeBlock: document.getElementById('codeBlock'),
-  typingInput: document.getElementById('typingInput'),
+  typingBox: document.getElementById('typingBox'),
   timeLeft: document.getElementById('timeLeft'),
   status: document.getElementById('status'),
   newChunkBtn: document.getElementById('newChunkBtn'),
@@ -38,9 +43,12 @@ function stopTimer() {
 
 function hardResetTyping() {
   stopTimer();
-  el.typingInput.value = '';
+  typedBuffer = [];
+  cursorIndex = 0;
   resetTimerUi();
   setStatus('Waiting');
+  inputEnabled = true;
+  updateRenderFromBuffer();
 }
 
 function computeResults(referenceText, typedText) {
@@ -67,7 +75,7 @@ function computeResults(referenceText, typedText) {
 }
 
 function showResults() {
-  const typed = el.typingInput.value;
+  const typed = typedBuffer.join('');
   const ref = currentChunk?.text ?? '';
   const r = computeResults(ref, typed);
 
@@ -87,7 +95,7 @@ function tick() {
   if (remaining <= 0) {
     stopTimer();
     setStatus('Done');
-    el.typingInput.disabled = true;
+    inputEnabled = false;
     showResults();
   }
 }
@@ -100,15 +108,87 @@ function startTimerIfNeeded() {
   timerInterval = setInterval(tick, 50);
 }
 
+function buildSpansForReference(referenceText) {
+  charSpans = [];
+  el.typingBox.textContent = '';
+
+  for (let i = 0; i < referenceText.length; i += 1) {
+    const ch = referenceText[i];
+    const span = document.createElement('span');
+    span.className = 'ch';
+    span.textContent = ch;
+    charSpans.push(span);
+    el.typingBox.appendChild(span);
+  }
+
+  cursorEndEl = document.createElement('span');
+  cursorEndEl.className = 'cursorEnd';
+  el.typingBox.appendChild(cursorEndEl);
+}
+
+function updateCursorVisual() {
+  for (const s of charSpans) s.classList.remove('cursor');
+  if (!currentChunk) return;
+
+  if (cursorIndex >= charSpans.length) {
+    cursorEndEl.style.display = 'inline-block';
+    return;
+  }
+
+  cursorEndEl.style.display = 'none';
+  charSpans[cursorIndex].classList.add('cursor');
+}
+
+function updateRenderFromBuffer() {
+  if (!currentChunk) return;
+
+  const referenceText = currentChunk.text;
+  for (let i = 0; i < charSpans.length; i += 1) {
+    const span = charSpans[i];
+    span.classList.remove('correct', 'incorrect');
+
+    if (i < typedBuffer.length) {
+      if (typedBuffer[i] === referenceText[i]) {
+        span.classList.add('correct');
+      } else {
+        span.classList.add('incorrect');
+      }
+    }
+  }
+
+  updateCursorVisual();
+}
+
+function acceptChar(ch) {
+  if (!currentChunk) return;
+  if (!inputEnabled) return;
+
+  const referenceText = currentChunk.text;
+  if (cursorIndex >= referenceText.length) return;
+
+  typedBuffer[cursorIndex] = ch;
+  cursorIndex = Math.min(referenceText.length, cursorIndex + 1);
+  updateRenderFromBuffer();
+}
+
+function handleBackspace() {
+  if (!currentChunk) return;
+  if (!inputEnabled) return;
+  if (cursorIndex <= 0) return;
+
+  cursorIndex -= 1;
+  typedBuffer.splice(cursorIndex, 1);
+  updateRenderFromBuffer();
+}
+
 function setChunk(chunk) {
   currentChunk = chunk;
-  el.codeBlock.textContent = chunk.text;
+  buildSpansForReference(chunk.text);
   el.chunkMeta.textContent = `${chunk.filename}  (lines ${chunk.start_line}-${chunk.end_line})  •  id ${chunk.id}`;
   el.retryBtn.disabled = false;
 
-  el.typingInput.disabled = false;
   hardResetTyping();
-  el.typingInput.focus();
+  el.typingBox.focus();
 }
 
 async function fetchJson(url) {
@@ -128,10 +208,10 @@ async function loadRandomChunk() {
     setChunk(chunk);
   } catch (e) {
     el.chunkMeta.textContent = String(e?.message || e);
-    el.codeBlock.textContent = '';
+    el.typingBox.textContent = '';
     setStatus('Error');
     el.retryBtn.disabled = true;
-    el.typingInput.disabled = true;
+    inputEnabled = false;
   }
 }
 
@@ -142,17 +222,58 @@ async function loadChunkById(id) {
     setChunk(chunk);
   } catch (e) {
     el.chunkMeta.textContent = String(e?.message || e);
-    el.codeBlock.textContent = '';
+    el.typingBox.textContent = '';
     setStatus('Error');
     el.retryBtn.disabled = true;
-    el.typingInput.disabled = true;
+    inputEnabled = false;
   }
 }
 
-el.typingInput.addEventListener('keydown', (ev) => {
-  // Start timer on first actual typing key.
-  if (ev.key.length === 1 || ev.key === 'Enter' || ev.key === 'Tab' || ev.key === 'Backspace' || ev.key === 'Delete') {
+el.typingBox.addEventListener('click', () => {
+  el.typingBox.focus();
+});
+
+el.typingBox.addEventListener('keydown', (ev) => {
+  if (!currentChunk) return;
+  if (!inputEnabled) {
+    ev.preventDefault();
+    return;
+  }
+
+  // Prevent the browser from scrolling on space.
+  if (ev.key === ' ') {
+    ev.preventDefault();
     startTimerIfNeeded();
+    acceptChar(' ');
+    return;
+  }
+
+  if (ev.key === 'Backspace') {
+    ev.preventDefault();
+    handleBackspace();
+    return;
+  }
+
+  if (ev.key === 'Tab') {
+    ev.preventDefault();
+    startTimerIfNeeded();
+    acceptChar('\t');
+    return;
+  }
+
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    startTimerIfNeeded();
+    acceptChar('\n');
+    return;
+  }
+
+  // Printable characters
+  if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    ev.preventDefault();
+    startTimerIfNeeded();
+    acceptChar(ev.key);
+    return;
   }
 });
 

@@ -34,6 +34,41 @@ h1 {
   font-size: 13px;
 }
 
+.typingbox {
+  min-height: 220px;
+  outline: none;
+  cursor: text;
+}
+
+.typingbox:focus {
+  border-radius: 6px;
+}
+
+.ch {
+  color: #999;
+}
+
+.ch.correct {
+  color: #111;
+}
+
+.ch.incorrect {
+  color: #111;
+  background: #ffd6d6;
+}
+
+.ch.cursor {
+  border-left: 2px solid #111;
+  margin-left: -1px;
+}
+
+.cursorEnd {
+  display: inline-block;
+  width: 0;
+  border-left: 2px solid #111;
+  margin-left: -1px;
+}
+
 .label {
   display: block;
   font-size: 12px;
