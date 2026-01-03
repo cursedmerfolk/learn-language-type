@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Code Typing Practice</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Code Typing Practice</h1>
+
+      <section class="meta" aria-label="Chunk metadata">
+        <div id="chunkMeta" class="muted">Loading…</div>
+      </section>
+
+      <section class="pane" aria-label="Code to type">
+        <pre id="codeBlock" class="code" tabindex="0"></pre>
+      </section>
+
+      <section class="pane" aria-label="Typing input">
+        <label class="label" for="typingInput">Type here</label>
+        <textarea id="typingInput" class="input" rows="6" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="Start typing to begin the 30 second timer…"></textarea>
+        <div class="row">
+          <div class="muted">Time: <span id="timeLeft">30.0</span>s</div>
+          <div class="muted">Status: <span id="status">Waiting</span></div>
+        </div>
+      </section>
+
+      <section class="row actions" aria-label="Actions">
+        <button id="newChunkBtn" class="btn" type="button">New random chunk</button>
+        <button id="retryBtn" class="btn" type="button" disabled>Retry same chunk</button>
+      </section>
+
+      <dialog id="resultsDialog">
+        <form method="dialog" class="dialog">
+          <h2>Results</h2>
+          <div class="dialogGrid">
+            <div class="muted">Characters/minute</div>
+            <div id="cpmValue" class="value">—</div>
+            <div class="muted">Accuracy</div>
+            <div id="accuracyValue" class="value">—</div>
+          </div>
+          <div class="row dialogActions">
+            <button id="dialogRetry" class="btn" value="retry">Retry same chunk</button>
+            <button id="dialogNew" class="btn" value="new">New random chunk</button>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
