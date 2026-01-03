@@ -154,3 +154,15 @@ dialog::backdrop {
 .dialogActions {
   justify-content: flex-end;
 }
+
+.hidden {
+  display: none;
+}
+
+.shaderCanvas {
+  width: 100%;
+  height: 260px;
+  display: block;
+  background: #000;
+  border-radius: 6px;
+}
