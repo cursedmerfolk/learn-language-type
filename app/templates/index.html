@@ -21,6 +21,16 @@
       <section class="row" aria-label="Status">
         <div class="muted">Time: <span id="timeLeft">30.0</span>s</div>
         <div class="muted">Status: <span id="status">Waiting</span></div>
+        <div class="muted">High score: <span id="highScore">—</span></div>
+      </section>
+
+      <section class="row" aria-label="Duration">
+        <div class="muted">Duration</div>
+        <div class="toggle" role="group" aria-label="Select duration">
+          <label class="toggleItem"><input type="radio" name="duration" value="30" checked /> 30s</label>
+          <label class="toggleItem"><input type="radio" name="duration" value="60" /> 60s</label>
+          <label class="toggleItem"><input type="radio" name="duration" value="90" /> 90s</label>
+        </div>
       </section>
 
       <section class="row actions" aria-label="Actions">
@@ -36,6 +46,8 @@
             <div id="cpmValue" class="value">—</div>
             <div class="muted">Accuracy</div>
             <div id="accuracyValue" class="value">—</div>
+            <div class="muted">Score (CPM × accuracy)</div>
+            <div id="scoreValue" class="value">—</div>
           </div>
           <div class="row dialogActions">
             <button id="dialogRetry" class="btn" value="retry">Retry same chunk</button>

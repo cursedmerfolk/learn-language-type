@@ -2,7 +2,14 @@ let currentChunk = null;
 let timerRunning = false;
 let startTs = null;
 let timerInterval = null;
-const DURATION_MS = 30_000;
+let durationSeconds = 30;
+
+function durationMs() {
+  return durationSeconds * 1000;
+}
+
+const HIGH_SCORE_KEY = 'code_typing_high_score_v1';
+const DURATION_KEY = 'code_typing_duration_seconds_v1';
 
 let inputEnabled = true;
 let typedBuffer = [];
@@ -15,21 +22,41 @@ const el = {
   typingBox: document.getElementById('typingBox'),
   timeLeft: document.getElementById('timeLeft'),
   status: document.getElementById('status'),
+  highScore: document.getElementById('highScore'),
   newChunkBtn: document.getElementById('newChunkBtn'),
   retryBtn: document.getElementById('retryBtn'),
   resultsDialog: document.getElementById('resultsDialog'),
   cpmValue: document.getElementById('cpmValue'),
   accuracyValue: document.getElementById('accuracyValue'),
+  scoreValue: document.getElementById('scoreValue'),
   dialogRetry: document.getElementById('dialogRetry'),
   dialogNew: document.getElementById('dialogNew'),
 };
+
+function getHighScore() {
+  const raw = localStorage.getItem(HIGH_SCORE_KEY);
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
+function setHighScore(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v < 0) return;
+  localStorage.setItem(HIGH_SCORE_KEY, String(v));
+}
+
+function renderHighScore() {
+  const hs = getHighScore();
+  el.highScore.textContent = hs <= 0 ? '—' : hs.toFixed(1);
+}
 
 function setStatus(text) {
   el.status.textContent = text;
 }
 
 function resetTimerUi() {
-  el.timeLeft.textContent = '30.0';
+  el.timeLeft.textContent = `${durationSeconds.toFixed(1)}`;
 }
 
 function stopTimer() {
@@ -53,7 +80,7 @@ function hardResetTyping() {
 
 function computeResults(referenceText, typedText) {
   const nonSpaceCount = typedText.replace(/\s/g, '').length;
-  const elapsedMinutes = DURATION_MS / 60_000;
+  const elapsedMinutes = durationMs() / 60_000;
   const cpm = Math.round(nonSpaceCount / elapsedMinutes);
 
   const compareLen = Math.min(referenceText.length, typedText.length);
@@ -79,8 +106,18 @@ function showResults() {
   const ref = currentChunk?.text ?? '';
   const r = computeResults(ref, typed);
 
+  const score = r.cpm * (r.accuracy / 100);
+  const roundedScore = Number.isFinite(score) ? score : 0;
+
   el.cpmValue.textContent = String(r.cpm);
   el.accuracyValue.textContent = `${r.accuracy.toFixed(1)}%`;
+  el.scoreValue.textContent = roundedScore.toFixed(1);
+
+  const hs = getHighScore();
+  if (roundedScore > hs) {
+    setHighScore(roundedScore);
+  }
+  renderHighScore();
 
   el.resultsDialog.showModal();
 }
@@ -89,7 +126,7 @@ function tick() {
   if (!timerRunning || !startTs) return;
   const now = performance.now();
   const elapsed = now - startTs;
-  const remaining = Math.max(0, DURATION_MS - elapsed);
+  const remaining = Math.max(0, durationMs() - elapsed);
   el.timeLeft.textContent = (remaining / 1000).toFixed(1);
 
   if (remaining <= 0) {
@@ -106,6 +143,36 @@ function startTimerIfNeeded() {
   startTs = performance.now();
   setStatus('Running');
   timerInterval = setInterval(tick, 50);
+}
+
+function getSavedDurationSeconds() {
+  const raw = localStorage.getItem(DURATION_KEY);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 30;
+  if (n === 30 || n === 60 || n === 90) return n;
+  return 30;
+}
+
+function saveDurationSeconds(value) {
+  localStorage.setItem(DURATION_KEY, String(value));
+}
+
+function setDurationSeconds(next) {
+  if (next !== 30 && next !== 60 && next !== 90) return;
+  durationSeconds = next;
+  saveDurationSeconds(next);
+
+  // Simplest behavior: changing duration resets the current attempt.
+  hardResetTyping();
+  skipIndentationIfAtLineStart();
+}
+
+function syncDurationUi() {
+  const radios = document.querySelectorAll('input[name="duration"]');
+  for (const r of radios) {
+    r.checked = Number(r.value) === durationSeconds;
+  }
+  resetTimerUi();
 }
 
 function buildSpansForReference(referenceText) {
@@ -218,6 +285,14 @@ function setChunk(chunk) {
   el.chunkMeta.textContent = `${chunk.filename}  (lines ${chunk.start_line}-${chunk.end_line})  •  id ${chunk.id}`;
   el.retryBtn.disabled = false;
 
+  // Encode current chunk in the URL for sharing/reloading.
+  if (chunk.page && chunk.start_line) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('page', chunk.page);
+    url.searchParams.set('line', String(chunk.start_line));
+    history.replaceState(null, '', url);
+  }
+
   hardResetTyping();
   skipIndentationIfAtLineStart();
   el.typingBox.focus();
@@ -259,6 +334,33 @@ async function loadChunkById(id) {
     el.retryBtn.disabled = true;
     inputEnabled = false;
   }
+}
+
+async function loadChunkByLocation(page, line) {
+  setStatus('Loading');
+  try {
+    const chunk = await fetchJson(`/api/chunk/loc?page=${encodeURIComponent(page)}&line=${encodeURIComponent(String(line))}`);
+    setChunk(chunk);
+  } catch (e) {
+    el.chunkMeta.textContent = String(e?.message || e);
+    el.typingBox.textContent = '';
+    setStatus('Error');
+    el.retryBtn.disabled = true;
+    inputEnabled = false;
+  }
+}
+
+function getInitialLocationFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const page = (params.get('page') || '').trim();
+  const lineRaw = (params.get('line') || '').trim();
+  if (!page) return null;
+
+  const line = Number(lineRaw);
+  if (!Number.isFinite(line) || line <= 0) {
+    return { page, line: 1 };
+  }
+  return { page, line: Math.floor(line) };
 }
 
 el.typingBox.addEventListener('click', () => {
@@ -324,19 +426,46 @@ el.newChunkBtn.addEventListener('click', async () => {
 });
 
 el.retryBtn.addEventListener('click', async () => {
-  if (!currentChunk?.id) return;
-  await loadChunkById(currentChunk.id);
+  if (!currentChunk) return;
+  if (currentChunk.page && currentChunk.start_line) {
+    await loadChunkByLocation(currentChunk.page, currentChunk.start_line);
+    return;
+  }
+  if (currentChunk.id) await loadChunkById(currentChunk.id);
 });
 
 el.resultsDialog.addEventListener('close', async () => {
   const action = el.resultsDialog.returnValue;
   if (action === 'retry') {
-    if (currentChunk?.id) await loadChunkById(currentChunk.id);
+    if (currentChunk?.page && currentChunk?.start_line) {
+      await loadChunkByLocation(currentChunk.page, currentChunk.start_line);
+    } else if (currentChunk?.id) {
+      await loadChunkById(currentChunk.id);
+    }
   } else if (action === 'new') {
     await loadRandomChunk();
   }
 });
 
 window.addEventListener('load', async () => {
-  await loadRandomChunk();
+  durationSeconds = getSavedDurationSeconds();
+  syncDurationUi();
+
+  const radios = document.querySelectorAll('input[name="duration"]');
+  for (const r of radios) {
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      setDurationSeconds(Number(r.value));
+      syncDurationUi();
+    });
+  }
+
+  renderHighScore();
+
+  const loc = getInitialLocationFromUrl();
+  if (loc) {
+    await loadChunkByLocation(loc.page, loc.line);
+  } else {
+    await loadRandomChunk();
+  }
 });
