@@ -52,9 +52,9 @@ function hardResetTyping() {
 }
 
 function computeResults(referenceText, typedText) {
-  const n = typedText.length;
+  const nonSpaceCount = typedText.replace(/\s/g, '').length;
   const elapsedMinutes = DURATION_MS / 60_000;
-  const cpm = Math.round(n / elapsedMinutes);
+  const cpm = Math.round(nonSpaceCount / elapsedMinutes);
 
   const compareLen = Math.min(referenceText.length, typedText.length);
   let correct = 0;
@@ -159,6 +159,37 @@ function updateRenderFromBuffer() {
   updateCursorVisual();
 }
 
+function scrollCursorIntoView() {
+  const cursorEl = el.typingBox.querySelector('.ch.cursor');
+  const target = cursorEl || cursorEndEl;
+  if (!target) return;
+  // Keep scrolling minimal.
+  try {
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  } catch {
+    // Older browsers / no options support.
+    target.scrollIntoView();
+  }
+}
+
+function skipIndentationIfAtLineStart({ scroll = false } = {}) {
+  if (!currentChunk) return;
+  if (!inputEnabled) return;
+
+  const ref = currentChunk.text;
+  const atLineStart = cursorIndex === 0 || ref[cursorIndex - 1] === '\n';
+  if (!atLineStart) return;
+
+  // Auto-fill leading indentation so the cursor starts at first non-space.
+  while (cursorIndex < ref.length && (ref[cursorIndex] === ' ' || ref[cursorIndex] === '\t')) {
+    typedBuffer.push(ref[cursorIndex]);
+    cursorIndex += 1;
+  }
+
+  updateRenderFromBuffer();
+  if (scroll) scrollCursorIntoView();
+}
+
 function acceptChar(ch) {
   if (!currentChunk) return;
   if (!inputEnabled) return;
@@ -188,6 +219,7 @@ function setChunk(chunk) {
   el.retryBtn.disabled = false;
 
   hardResetTyping();
+  skipIndentationIfAtLineStart();
   el.typingBox.focus();
 }
 
@@ -240,6 +272,10 @@ el.typingBox.addEventListener('keydown', (ev) => {
     return;
   }
 
+  // If we're at the beginning of a line, keep the cursor on the first non-space.
+  // This handles initial focus and post-backspace cases.
+  skipIndentationIfAtLineStart();
+
   // Prevent the browser from scrolling on space.
   if (ev.key === ' ') {
     ev.preventDefault();
@@ -264,7 +300,13 @@ el.typingBox.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') {
     ev.preventDefault();
     startTimerIfNeeded();
+    const ref = currentChunk.text;
+    const isAtActualNewline = cursorIndex < ref.length && ref[cursorIndex] === '\n';
     acceptChar('\n');
+    // If Enter matched the end-of-line newline, jump to next line's first non-space and scroll.
+    if (isAtActualNewline) {
+      skipIndentationIfAtLineStart({ scroll: true });
+    }
     return;
   }
 
