@@ -166,3 +166,65 @@ dialog::backdrop {
   background: #000;
   border-radius: 6px;
 }
+
+.translation {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #555;
+}
+
+.tok {
+  color: #555;
+}
+
+.tok.hl {
+  color: #111;
+  border-bottom: 2px solid #111;
+}
+
+.learnContainer {
+  min-height: 100vh;
+}
+
+.learnCenter {
+  min-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin: 18px 0 10px;
+}
+
+.learnEnglish {
+  text-align: center;
+  font-size: 18px;
+  color: #555;
+}
+
+.learnSpanish {
+  min-height: 0;
+  border: none;
+  padding: 0;
+  margin: 0;
+  outline: none;
+  cursor: text;
+  text-align: center;
+  white-space: pre-wrap;
+  font-size: 30px;
+  line-height: 1.25;
+  font-family: inherit;
+}
+
+.learnSpanish .ch {
+  color: #999;
+}
+
+.learnSpanish .ch.correct {
+  color: #111;
+}
+
+.learnSpanish .ch.incorrect {
+  color: #111;
+  background: #ffd6d6;
+}

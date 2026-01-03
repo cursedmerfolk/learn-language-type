@@ -1,6 +1,3 @@
-let queue = [];
-let queueIndex = 0;
-
 let currentItem = null;
 let inputEnabled = true;
 let typedBuffer = [];
@@ -10,16 +7,124 @@ let cursorEndEl = null;
 let srcTokenRanges = [];
 let tgtTokenSpans = [];
 
+let durationSeconds = 30;
+let timerRunning = false;
+let startTs = null;
+let timerInterval = null;
+
+let roundCorrect = 0;
+let roundTyped = 0;
+let roundNonSpace = 0;
+let sentencesCompleted = 0;
+
 const el = {
   sentenceMeta: document.getElementById('sentenceMeta'),
   englishBox: document.getElementById('englishBox'),
   typingBox: document.getElementById('typingBox'),
-  newSetBtn: document.getElementById('newSetBtn'),
+  timeLeft: document.getElementById('timeLeft'),
+  status: document.getElementById('status'),
+  durationPane: document.getElementById('durationPane'),
+  newRoundBtn: document.getElementById('newRoundBtn'),
   retryBtn: document.getElementById('retryBtn'),
+  resultsDialog: document.getElementById('resultsDialog'),
+  cpmValue: document.getElementById('cpmValue'),
+  accuracyValue: document.getElementById('accuracyValue'),
+  sentencesValue: document.getElementById('sentencesValue'),
+  dialogNew: document.getElementById('dialogNew'),
 };
+
+const DURATION_KEY = 'code_typing_duration_seconds_v1';
 
 function setMeta(text) {
   el.sentenceMeta.textContent = text;
+}
+
+function setStatus(text) {
+  el.status.textContent = text;
+}
+
+function resetTimerUi() {
+  el.timeLeft.textContent = `${durationSeconds.toFixed(1)}`;
+}
+
+function stopTimer() {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  timerRunning = false;
+  startTs = null;
+}
+
+function durationMs() {
+  return durationSeconds * 1000;
+}
+
+function tick() {
+  if (!timerRunning || !startTs) return;
+  const now = performance.now();
+  const elapsed = now - startTs;
+  const remaining = Math.max(0, durationMs() - elapsed);
+  el.timeLeft.textContent = (remaining / 1000).toFixed(1);
+
+  if (remaining <= 0) {
+    stopTimer();
+    inputEnabled = false;
+    setStatus('Done');
+    showResults(durationMs());
+  }
+}
+
+function startAttemptIfNeeded() {
+  if (timerRunning) return;
+  timerRunning = true;
+  startTs = performance.now();
+  setStatus('Running');
+  timerInterval = setInterval(tick, 50);
+}
+
+function computeResults(elapsedMs) {
+  const safeElapsedMs = Math.max(1, elapsedMs);
+  const elapsedMinutes = safeElapsedMs / 60_000;
+  const cpm = Math.round(roundNonSpace / elapsedMinutes);
+  const accuracy = roundTyped === 0 ? 0 : (roundCorrect / roundTyped) * 100;
+  return { cpm, accuracy };
+}
+
+function showResults(elapsedMs) {
+  const r = computeResults(elapsedMs);
+  el.cpmValue.textContent = String(r.cpm);
+  el.accuracyValue.textContent = `${r.accuracy.toFixed(1)}%`;
+  el.sentencesValue.textContent = String(sentencesCompleted);
+  el.resultsDialog.showModal();
+}
+
+function getSavedDurationSeconds() {
+  const raw = localStorage.getItem(DURATION_KEY);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 30;
+  if (n === 30 || n === 60 || n === 90) return n;
+  return 30;
+}
+
+function saveDurationSeconds(value) {
+  localStorage.setItem(DURATION_KEY, String(value));
+}
+
+function setDurationSeconds(next) {
+  if (next !== 30 && next !== 60 && next !== 90) return;
+  durationSeconds = next;
+  saveDurationSeconds(next);
+  // Changing duration resets the round.
+  startNewRound();
+}
+
+function syncDurationUi() {
+  const radios = document.querySelectorAll('input[name="duration"]');
+  for (const r of radios) {
+    r.checked = Number(r.value) === durationSeconds;
+  }
+  resetTimerUi();
 }
 
 function buildSpansForReference(referenceText) {
@@ -97,6 +202,27 @@ function renderEnglishTokens(tokens) {
   }
 }
 
+function updateAlignmentForCurrentSentence(alignPayload) {
+  if (!currentItem) return;
+  if (alignPayload?.sp_id !== currentItem.sp_id) return;
+  currentItem.align = alignPayload.align || {};
+  // Prefer aligner's tokens if provided.
+  if (Array.isArray(alignPayload.tgt_tokens)) {
+    currentItem.tgt_tokens = alignPayload.tgt_tokens;
+    renderEnglishTokens(currentItem.tgt_tokens);
+  }
+  updateEnglishHighlight();
+}
+
+async function fetchAlignment(spId) {
+  try {
+    const payload = await fetchJson(`/api/learn/align?sp_id=${encodeURIComponent(String(spId))}`);
+    updateAlignmentForCurrentSentence(payload);
+  } catch {
+    // Ignore alignment errors; the round can continue without highlighting.
+  }
+}
+
 function findLastNonWhitespacePos() {
   if (!currentItem) return null;
   const ref = currentItem.spanish;
@@ -143,11 +269,10 @@ function startSentence(item) {
   srcTokenRanges = computeTokenRanges(item.spanish);
   renderEnglishTokens(item.tgt_tokens || item.english.split(/\s+/).filter(Boolean));
 
-  const idx = queueIndex + 1;
-  const total = queue.length;
-  setMeta(`Sentence ${idx}/${total}`);
-  if (item.align_error) {
-    setMeta(`Sentence ${idx}/${total} • Alignment unavailable (${item.align_error})`);
+  setMeta('');
+  // Alignment is fetched lazily so the first paint is fast.
+  if (item.sp_id) {
+    fetchAlignment(item.sp_id);
   }
 
   el.retryBtn.disabled = false;
@@ -165,22 +290,31 @@ async function fetchJson(url) {
   return data;
 }
 
-async function loadNewQueue() {
+async function loadRandomSentence() {
   setMeta('Loading…');
-  const data = await fetchJson('/api/learn/random?count=10');
-  queue = data.items || [];
-  queueIndex = 0;
-  if (!queue.length) throw new Error('No sentence pairs available');
-  startSentence(queue[0]);
+  const data = await fetchJson('/api/learn/random?count=1');
+  const items = data.items || [];
+  if (!items.length) throw new Error('No sentence pairs available');
+  startSentence(items[0]);
 }
 
-async function loadQueueByIds(ids) {
-  setMeta('Loading…');
-  const data = await fetchJson(`/api/learn/by_ids?ids=${encodeURIComponent(ids.join(','))}`);
-  queue = data.items || [];
-  queueIndex = 0;
-  if (!queue.length) throw new Error('No sentence pairs available for ids');
-  startSentence(queue[0]);
+function startNewRound() {
+  stopTimer();
+  timerRunning = false;
+  startTs = null;
+  roundCorrect = 0;
+  roundTyped = 0;
+  roundNonSpace = 0;
+  sentencesCompleted = 0;
+  resetTimerUi();
+  setStatus('Waiting');
+  inputEnabled = true;
+  loadRandomSentence().catch((e) => {
+    setMeta(String(e?.message || e));
+    inputEnabled = false;
+    el.retryBtn.disabled = true;
+    setStatus('Error');
+  });
 }
 
 function acceptChar(ch) {
@@ -190,17 +324,21 @@ function acceptChar(ch) {
   const ref = currentItem.spanish;
   if (cursorIndex >= ref.length) return;
 
+  startAttemptIfNeeded();
+
+  const expected = ref[cursorIndex];
+  roundTyped += 1;
+  if (ch === expected) roundCorrect += 1;
+  if (!/\s/.test(ch)) roundNonSpace += 1;
+
   typedBuffer[cursorIndex] = ch;
   cursorIndex = Math.min(ref.length, cursorIndex + 1);
   updateRenderFromBuffer();
 
   if (cursorIndex >= ref.length) {
-    // Advance to next sentence in the queue.
-    queueIndex += 1;
-    if (queueIndex < queue.length) {
-      startSentence(queue[queueIndex]);
-    } else {
-      loadNewQueue().catch((e) => {
+    sentencesCompleted += 1;
+    if (timerRunning) {
+      loadRandomSentence().catch((e) => {
         setMeta(String(e?.message || e));
       });
     }
@@ -252,8 +390,8 @@ el.typingBox.addEventListener('keydown', (ev) => {
   }
 });
 
-el.newSetBtn.addEventListener('click', async () => {
-  await loadNewQueue().catch((e) => setMeta(String(e?.message || e)));
+el.newRoundBtn.addEventListener('click', () => {
+  startNewRound();
 });
 
 el.retryBtn.addEventListener('click', () => {
@@ -261,20 +399,25 @@ el.retryBtn.addEventListener('click', () => {
   startSentence(currentItem);
 });
 
+el.resultsDialog.addEventListener('close', () => {
+  const action = el.resultsDialog.returnValue;
+  if (action === 'new') {
+    startNewRound();
+  }
+});
+
 window.addEventListener('load', async () => {
-  const params = new URLSearchParams(window.location.search);
-  const idsRaw = (params.get('ids') || '').trim();
-  if (idsRaw) {
-    const ids = idsRaw.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
-    if (ids.length) {
-      await loadQueueByIds(ids);
-      return;
-    }
+  durationSeconds = getSavedDurationSeconds();
+  syncDurationUi();
+
+  const radios = document.querySelectorAll('input[name="duration"]');
+  for (const r of radios) {
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      setDurationSeconds(Number(r.value));
+      syncDurationUi();
+    });
   }
 
-  await loadNewQueue().catch((e) => {
-    setMeta(String(e?.message || e));
-    el.retryBtn.disabled = true;
-    inputEnabled = false;
-  });
+  startNewRound();
 });

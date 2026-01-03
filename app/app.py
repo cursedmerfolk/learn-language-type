@@ -15,6 +15,104 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SOURCES_DIR = BASE_DIR / "sources"
 SHADERS_DIR = BASE_DIR / "webgl-shader-examples" / "shaders"
 WEB_CONTENT_DIR = BASE_DIR / "webgl-shader-examples" / "WebContent"
+SENTENCE_PAIRS_TSV = BASE_DIR / "sentence_pairs_sp_eng.tsv"
+
+
+@dataclass(frozen=True)
+class SentencePair:
+    sp_id: int
+    en_id: int
+    spanish: str
+    english: str
+
+
+_sentence_pairs_cache: list[SentencePair] | None = None
+_simalign_aligner = None
+_alignment_cache: dict[int, dict] = {}
+
+
+def _load_sentence_pairs() -> list[SentencePair]:
+    global _sentence_pairs_cache
+    if _sentence_pairs_cache is not None:
+        return _sentence_pairs_cache
+
+    if not SENTENCE_PAIRS_TSV.exists():
+        _sentence_pairs_cache = []
+        return _sentence_pairs_cache
+
+    pairs: list[SentencePair] = []
+    try:
+        raw = SENTENCE_PAIRS_TSV.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        _sentence_pairs_cache = []
+        return _sentence_pairs_cache
+
+    for line in _normalize_newlines(raw).split("\n"):
+        if not line.strip():
+            continue
+        cols = line.split("\t")
+        if len(cols) < 4:
+            continue
+        try:
+            sp_id = int(cols[0].strip())
+            en_id = int(cols[2].strip())
+        except ValueError:
+            continue
+        spanish = cols[1].strip()
+        english = cols[3].strip()
+        if not spanish or not english:
+            continue
+        pairs.append(SentencePair(sp_id=sp_id, en_id=en_id, spanish=spanish, english=english))
+
+    _sentence_pairs_cache = pairs
+    return pairs
+
+
+def _get_simalign_aligner():
+    global _simalign_aligner
+    if _simalign_aligner is not None:
+        return _simalign_aligner
+
+    try:
+        from simalign import SentenceAligner
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "SimAlign is not installed or failed to import. Install it (and its deps) to enable alignment. "
+            f"Import error: {e}"
+        )
+
+    # Note: in SimAlign 0.4, matching_methods is parsed character-by-character
+    # (default is "mai"). Passing "mwmf" can raise KeyError('w').
+    # We keep defaults here; get_word_aligns() still returns "mwmf"/"inter"/"itermax".
+    _simalign_aligner = SentenceAligner(model="bert", token_type="bpe")
+    return _simalign_aligner
+
+
+def _compute_word_alignment(spanish: str, english: str) -> tuple[list[str], list[str], dict[int, list[int]], str]:
+    src_tokens = spanish.split()
+    tgt_tokens = english.split()
+    if not src_tokens or not tgt_tokens:
+        return src_tokens, tgt_tokens, {}, "none"
+
+    aligner = _get_simalign_aligner()
+    aligns = aligner.get_word_aligns(spanish, english)
+    method = "mwmf" if "mwmf" in aligns else (next(iter(aligns.keys())) if aligns else "none")
+    pairs = aligns.get(method) if aligns else None
+    if not pairs:
+        return src_tokens, tgt_tokens, {}, method
+
+    mapping: dict[int, list[int]] = {}
+    for i, j in sorted(pairs):
+        mapping.setdefault(int(i), []).append(int(j))
+    return src_tokens, tgt_tokens, mapping, method
+
+
+def _get_sentence_pair_by_sp_id(sp_id: int) -> SentencePair | None:
+    pairs = _load_sentence_pairs()
+    for p in pairs:
+        if p.sp_id == sp_id:
+            return p
+    return None
 
 
 @dataclass(frozen=True)
@@ -324,6 +422,10 @@ def create_app() -> Flask:
     def index():
         return render_template("index.html")
 
+    @app.get("/learn-language")
+    def learn_language():
+        return render_template("learn_language.html")
+
     @app.get("/api/chunk/random")
     def api_chunk_random():
         chunks = [c for c in load_all_chunks() if c.text.strip()]
@@ -566,6 +668,152 @@ def create_app() -> Flask:
         # Prefer the first deterministically.
         chosen = matches[0] if matches else None
         return jsonify({"shader": shader_name, "example": chosen, "matches": matches})
+
+    @app.get("/api/learn/random")
+    def api_learn_random():
+        pairs = _load_sentence_pairs()
+        if not pairs:
+            return jsonify({"error": "sentence_pairs_sp_eng.tsv not found or empty"}), 400
+
+        count_raw = request.args.get("count", "8").strip()
+        try:
+            count = int(count_raw)
+        except ValueError:
+            count = 8
+        count = max(1, min(50, count))
+
+        # sample without replacement when possible
+        chosen = random.sample(pairs, k=min(count, len(pairs)))
+
+        with_align = request.args.get("with_align", "0").strip() in {"1", "true", "yes"}
+
+        items = []
+        for p in chosen:
+            src_tokens = p.spanish.split()
+            tgt_tokens = p.english.split()
+
+            item = {
+                "sp_id": p.sp_id,
+                "en_id": p.en_id,
+                "spanish": p.spanish,
+                "english": p.english,
+                "src_tokens": src_tokens,
+                "tgt_tokens": tgt_tokens,
+            }
+
+            if with_align:
+                try:
+                    src_tokens, tgt_tokens, mapping, method = _compute_word_alignment(p.spanish, p.english)
+                    item["src_tokens"] = src_tokens
+                    item["tgt_tokens"] = tgt_tokens
+                    item["align"] = {str(k): v for k, v in mapping.items()}
+                    item["align_method"] = method
+                except Exception as e:  # noqa: BLE001
+                    item["align"] = {}
+                    item["align_method"] = "error"
+                    item["align_error"] = str(e)
+
+            items.append(item)
+
+        return jsonify({"items": items})
+
+    @app.get("/api/learn/align")
+    def api_learn_align():
+        sp_id_raw = request.args.get("sp_id", "").strip()
+        if not sp_id_raw:
+            return jsonify({"error": "Missing sp_id"}), 400
+        try:
+            sp_id = int(sp_id_raw)
+        except ValueError:
+            return jsonify({"error": "Invalid sp_id"}), 400
+
+        if sp_id in _alignment_cache:
+            return jsonify(_alignment_cache[sp_id])
+
+        p = _get_sentence_pair_by_sp_id(sp_id)
+        if not p:
+            return jsonify({"error": "Sentence id not found"}), 404
+
+        try:
+            src_tokens, tgt_tokens, mapping, method = _compute_word_alignment(p.spanish, p.english)
+            payload = {
+                "sp_id": p.sp_id,
+                "src_tokens": src_tokens,
+                "tgt_tokens": tgt_tokens,
+                "align": {str(k): v for k, v in mapping.items()},
+                "align_method": method,
+            }
+        except Exception as e:  # noqa: BLE001
+            payload = {
+                "sp_id": p.sp_id,
+                "src_tokens": p.spanish.split(),
+                "tgt_tokens": p.english.split(),
+                "align": {},
+                "align_method": "error",
+                "align_error": str(e),
+            }
+
+        _alignment_cache[sp_id] = payload
+        return jsonify(payload)
+
+    @app.get("/api/learn/by_ids")
+    def api_learn_by_ids():
+        raw = request.args.get("ids", "").strip()
+        if not raw:
+            return jsonify({"error": "Missing ids"}), 400
+        wanted: list[int] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                wanted.append(int(part))
+            except ValueError:
+                continue
+        if not wanted:
+            return jsonify({"error": "No valid ids"}), 400
+
+        pairs = _load_sentence_pairs()
+        by_id = {p.sp_id: p for p in pairs}
+
+        items = []
+        for sp_id in wanted:
+            p = by_id.get(sp_id)
+            if not p:
+                continue
+            try:
+                src_tokens, tgt_tokens, mapping, method = _compute_word_alignment(p.spanish, p.english)
+            except Exception as e:  # noqa: BLE001
+                src_tokens, tgt_tokens, mapping, method = p.spanish.split(), p.english.split(), {}, "error"
+                items.append(
+                    {
+                        "sp_id": p.sp_id,
+                        "en_id": p.en_id,
+                        "spanish": p.spanish,
+                        "english": p.english,
+                        "src_tokens": src_tokens,
+                        "tgt_tokens": tgt_tokens,
+                        "align": {str(k): v for k, v in mapping.items()},
+                        "align_method": method,
+                        "align_error": str(e),
+                    }
+                )
+                continue
+
+            items.append(
+                {
+                    "sp_id": p.sp_id,
+                    "en_id": p.en_id,
+                    "spanish": p.spanish,
+                    "english": p.english,
+                    "src_tokens": src_tokens,
+                    "tgt_tokens": tgt_tokens,
+                    "align": {str(k): v for k, v in mapping.items()},
+                    "align_method": method,
+                }
+            )
+
+        return jsonify({"items": items})
 
     return app
 

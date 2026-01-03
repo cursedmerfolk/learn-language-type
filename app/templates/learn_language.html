@@ -7,27 +7,50 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
-    <main class="container">
+    <main class="container learnContainer">
       <h1>Learn Language</h1>
 
-      <section class="meta" aria-label="Sentence metadata">
+      <section class="row" aria-label="Status">
+        <div class="muted">Time: <span id="timeLeft">30.0</span>s</div>
+        <div class="muted">Status: <span id="status">Waiting</span></div>
         <div id="sentenceMeta" class="muted">Loading…</div>
       </section>
 
-      <section class="pane" aria-label="English translation">
-        <div class="muted" style="margin-bottom: 6px;">English</div>
-        <div id="englishBox" class="translation" aria-label="English sentence"></div>
+      <section id="durationPane" class="row" aria-label="Duration">
+        <div class="muted">Duration</div>
+        <div class="toggle" role="group" aria-label="Select duration">
+          <label class="toggleItem"><input type="radio" name="duration" value="30" checked /> 30s</label>
+          <label class="toggleItem"><input type="radio" name="duration" value="60" /> 60s</label>
+          <label class="toggleItem"><input type="radio" name="duration" value="90" /> 90s</label>
+        </div>
       </section>
 
-      <section class="pane" aria-label="Spanish sentence to type">
-        <div class="muted" style="margin-bottom: 6px;">Type Spanish</div>
-        <pre id="typingBox" class="code typingbox" tabindex="0" role="textbox" aria-multiline="true" aria-label="Type the Spanish sentence shown"></pre>
+      <section class="learnCenter" aria-label="Translation and typing">
+        <div id="englishBox" class="translation learnEnglish" aria-label="English sentence"></div>
+        <div id="typingBox" class="typingbox learnSpanish" tabindex="0" role="textbox" aria-multiline="true" aria-label="Type the Spanish sentence shown"></div>
       </section>
 
       <section class="row actions" aria-label="Actions">
-        <button id="newSetBtn" class="btn" type="button">New sentences</button>
+        <button id="newRoundBtn" class="btn" type="button">New round</button>
         <button id="retryBtn" class="btn" type="button" disabled>Retry sentence</button>
       </section>
+
+      <dialog id="resultsDialog">
+        <form method="dialog" class="dialog">
+          <h2>Results</h2>
+          <div class="dialogGrid">
+            <div class="muted">Characters/minute</div>
+            <div id="cpmValue" class="value">—</div>
+            <div class="muted">Accuracy</div>
+            <div id="accuracyValue" class="value">—</div>
+            <div class="muted">Sentences completed</div>
+            <div id="sentencesValue" class="value">—</div>
+          </div>
+          <div class="row dialogActions">
+            <button id="dialogNew" class="btn" value="new">New round</button>
+          </div>
+        </form>
+      </dialog>
     </main>
 
     <script src="{{ url_for('static', filename='learn_language.js') }}"></script>
