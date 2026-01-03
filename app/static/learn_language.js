@@ -488,10 +488,15 @@ function buildSpansForReference(referenceText, containerEl) {
   return { spans, endEl };
 }
 
-function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive) {
+function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive, groupStart, groupEnd) {
   for (let i = 0; i < spans.length; i += 1) {
     const span = spans[i];
-    span.classList.remove('correct', 'incorrect', 'cursor');
+    span.classList.remove('correct', 'incorrect', 'cursor', 'group');
+
+    if (isActive && Number.isFinite(groupStart) && Number.isFinite(groupEnd)) {
+      if (i >= groupStart && i < groupEnd) span.classList.add('group');
+    }
+
     if (typedBuffer[i] !== undefined) {
       if (typedBuffer[i] === text[i]) span.classList.add('correct');
       else span.classList.add('incorrect');
@@ -509,8 +514,26 @@ function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive) {
 }
 
 function updateRenderFromBuffers() {
-  renderTypingRow(spText, spTypedBuffer, spCursorIndex, spCharSpans, spCursorEndEl, activeLang === 'sp');
-  renderTypingRow(enText, enTypedBuffer, enCursorIndex, enCharSpans, enCursorEndEl, activeLang === 'en');
+  renderTypingRow(
+    spText,
+    spTypedBuffer,
+    spCursorIndex,
+    spCharSpans,
+    spCursorEndEl,
+    activeLang === 'sp',
+    spGroupStart,
+    spGroupEnd,
+  );
+  renderTypingRow(
+    enText,
+    enTypedBuffer,
+    enCursorIndex,
+    enCharSpans,
+    enCursorEndEl,
+    activeLang === 'en',
+    enGroupStart,
+    enGroupEnd,
+  );
 }
 function updateAlignmentForCurrentSentence(alignPayload) {
   if (!currentItem) return;

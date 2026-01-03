@@ -52,6 +52,10 @@ h1 {
   color: #111;
 }
 
+.ch.group {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 .ch.incorrect {
   color: #111;
   background: #ffd6d6;
