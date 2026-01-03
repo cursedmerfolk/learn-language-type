@@ -223,20 +223,25 @@ async function fetchAlignment(spId) {
   }
 }
 
-function findLastNonWhitespacePos() {
+function getActiveSrcTokenIndex() {
   if (!currentItem) return null;
   const ref = currentItem.spanish;
-  for (let pos = Math.min(cursorIndex - 1, ref.length - 1); pos >= 0; pos -= 1) {
-    if (pos < typedBuffer.length && typedBuffer[pos] !== undefined && !/\s/.test(ref[pos])) {
-      return pos;
+
+  // Prefer the current cursor position (the next character to type).
+  // This makes highlighting visible immediately (even before typing).
+  let pos = Math.min(Math.max(0, cursorIndex), Math.max(0, ref.length - 1));
+
+  // If we're sitting on whitespace (e.g. between words), fall back to the
+  // previous non-whitespace character so the highlight doesn't disappear.
+  if (/\s/.test(ref[pos])) {
+    for (let p = Math.min(pos - 1, ref.length - 1); p >= 0; p -= 1) {
+      if (!/\s/.test(ref[p])) {
+        pos = p;
+        break;
+      }
     }
   }
-  return null;
-}
 
-function getActiveSrcTokenIndex() {
-  const pos = findLastNonWhitespacePos();
-  if (pos === null) return null;
   for (let i = 0; i < srcTokenRanges.length; i += 1) {
     const r = srcTokenRanges[i];
     if (r.start <= pos && pos < r.end) return i;
