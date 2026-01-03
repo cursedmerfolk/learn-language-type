@@ -25,8 +25,15 @@ function durationMs() {
   return durationSeconds * 1000;
 }
 
-const HIGH_SCORE_KEY = 'code_typing_high_score_v1';
+const HIGH_SCORE_KEY_V1 = 'code_typing_high_score_v1';
+const HIGH_SCORE_KEY = 'code_typing_high_score_wpm_v1';
 const DURATION_KEY = 'code_typing_duration_seconds_v1';
+
+function toWpmFromCpm(cpm) {
+  const n = Number(cpm);
+  if (!Number.isFinite(n)) return 0;
+  return n / 5;
+}
 
 let inputEnabled = true;
 let typedBuffer = [];
@@ -56,8 +63,15 @@ const el = {
 function getHighScore() {
   const raw = localStorage.getItem(HIGH_SCORE_KEY);
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n;
+  if (Number.isFinite(n) && n >= 0) return n;
+
+  // Migrate from legacy CPM-based score if present.
+  const legacyRaw = localStorage.getItem(HIGH_SCORE_KEY_V1);
+  const legacy = Number(legacyRaw);
+  if (!Number.isFinite(legacy) || legacy <= 0) return 0;
+  const migrated = toWpmFromCpm(legacy);
+  localStorage.setItem(HIGH_SCORE_KEY, String(migrated));
+  return migrated;
 }
 
 function setHighScore(value) {
@@ -118,6 +132,7 @@ function computeResults(referenceText, typedText, elapsedMs) {
   const safeElapsedMs = Math.max(1, elapsedMs);
   const elapsedMinutes = safeElapsedMs / 60_000;
   const cpm = Math.round(nonSpaceCount / elapsedMinutes);
+  const wpm = cpm / 5;
 
   const compareLen = Math.min(referenceText.length, typedText.length);
   let correct = 0;
@@ -129,7 +144,7 @@ function computeResults(referenceText, typedText, elapsedMs) {
   const accuracy = typedText.length === 0 ? 0 : (correct / typedText.length) * 100;
 
   return {
-    cpm,
+    wpm,
     accuracy,
     correct,
     incorrect,
@@ -142,10 +157,10 @@ function showResults(elapsedMs) {
   const ref = currentChunk?.text ?? '';
   const r = computeResults(ref, typed, elapsedMs);
 
-  const score = r.cpm * (r.accuracy / 100);
+  const score = r.wpm * (r.accuracy / 100);
   const roundedScore = Number.isFinite(score) ? score : 0;
 
-  el.cpmValue.textContent = String(r.cpm);
+  el.cpmValue.textContent = r.wpm.toFixed(1);
   el.accuracyValue.textContent = `${r.accuracy.toFixed(1)}%`;
   el.scoreValue.textContent = roundedScore.toFixed(1);
 

@@ -4,6 +4,7 @@ import hashlib
 import os
 import random
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -29,6 +30,34 @@ class SentencePair:
 _sentence_pairs_cache: list[SentencePair] | None = None
 _simalign_aligner = None
 _alignment_cache: dict[int, dict] = {}
+_simalign_warm_started = False
+_simalign_warm_lock = threading.Lock()
+
+
+def _start_simalign_warmup() -> None:
+    """Start loading the SimAlign model in the background.
+
+    The first call into SimAlign can be very slow (model download + torch init).
+    Warming it up when the server starts serving prevents the UI from feeling
+    "broken" for minutes on the first alignment request.
+    """
+
+    global _simalign_warm_started
+    with _simalign_warm_lock:
+        if _simalign_warm_started:
+            return
+        _simalign_warm_started = True
+
+    def _worker() -> None:
+        try:
+            _get_simalign_aligner()
+            # Run one tiny alignment to initialize any lazy internals.
+            _compute_word_alignment("hola", "hello")
+        except Exception:
+            # If SimAlign isn't available, the API will fall back gracefully.
+            pass
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _load_sentence_pairs() -> list[SentencePair]:
@@ -417,6 +446,10 @@ def _safe_resolve_source(page: str) -> Path | None:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+
+    @app.before_request
+    def _warm_models() -> None:
+        _start_simalign_warmup()
 
     @app.get("/")
     def index():

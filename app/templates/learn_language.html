@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Learn Language</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-keyboard@3.7.106/build/css/index.css" />
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
@@ -25,9 +26,29 @@
         </div>
       </section>
 
+      <section class="learnScores" aria-label="Scores">
+        <div class="muted learnLastRound">
+          Last round:
+          <span id="lastCpm" class="value">—</span> wpm ·
+          <span id="lastAcc" class="value">—</span> ·
+          <span id="lastScore" class="value">—</span> modified wpm
+        </div>
+        <div class="muted learnHighScoreLine">
+          High score:
+          <span id="highScore" class="value">—</span> modified wpm
+        </div>
+      </section>
+
       <section class="learnCenter" aria-label="Translation and typing">
-        <div id="englishBox" class="translation learnEnglish" aria-label="English sentence"></div>
-        <div id="typingBox" class="typingbox learnSpanish" tabindex="0" role="textbox" aria-multiline="true" aria-label="Type the Spanish sentence shown"></div>
+        <div id="sentenceWrap" class="sentenceWrap" aria-label="Current sentence">
+          <div id="englishBox" class="translation learnEnglish" aria-label="English sentence"></div>
+          <div id="typingBox" class="typingbox learnSpanish" tabindex="0" role="textbox" aria-multiline="true" aria-label="Type the Spanish sentence shown"></div>
+          <div id="timeBar" class="timeBar" role="progressbar" aria-label="Time remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="timeBarFill" class="timeBarFill"></div>
+          </div>
+
+          <div id="osk" class="osk" aria-hidden="true"></div>
+        </div>
       </section>
 
       <section class="row actions" aria-label="Actions">
@@ -38,11 +59,14 @@
       <dialog id="resultsDialog">
         <form method="dialog" class="dialog">
           <h2>Results</h2>
+          <div id="highScoreBanner" class="muted hidden" aria-live="polite">High Score!</div>
           <div class="dialogGrid">
-            <div class="muted">Characters/minute</div>
+            <div class="muted">Words/minute</div>
             <div id="cpmValue" class="value">—</div>
             <div class="muted">Accuracy</div>
             <div id="accuracyValue" class="value">—</div>
+            <div class="muted">Modified wpm</div>
+            <div id="scoreValue" class="value">—</div>
             <div class="muted">Sentences completed</div>
             <div id="sentencesValue" class="value">—</div>
           </div>
@@ -53,6 +77,7 @@
       </dialog>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.7.106/build/index.js"></script>
     <script src="{{ url_for('static', filename='learn_language.js') }}"></script>
   </body>
 </html>
