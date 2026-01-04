@@ -28,6 +28,14 @@ let spGroupEnd = 0;
 let enGroupStart = 0;
 let enGroupEnd = 0;
 
+// New group-typing state: within each group, we type a sequence of tokens on
+// one side, then flip and type the other side.
+let activeTokenPos = 0;
+let spHighlightMask = null;
+let enHighlightMask = null;
+let spUnderlineMask = null;
+let enUnderlineMask = null;
+
 let durationSeconds = 60;
 let timerRunning = false;
 let startTs = null;
@@ -48,8 +56,6 @@ const el = {
   englishTypingBox: document.getElementById('englishTypingBox'),
   typingBox: document.getElementById('typingBox'),
   timeLeft: document.getElementById('timeLeft'),
-  timeBar: document.getElementById('timeBar'),
-  timeBarFill: document.getElementById('timeBarFill'),
   status: document.getElementById('status'),
   newRoundBtn: document.getElementById('newRoundBtn'),
   resultsDialog: document.getElementById('resultsDialog'),
@@ -94,7 +100,86 @@ function setActiveLang(next) {
   } else {
     el.englishTypingBox?.focus();
   }
-  updateRenderFromBuffers();
+}
+
+function cleanTokenIdxList(list, maxExclusive) {
+  const out = [];
+  const seen = new Set();
+  const arr = Array.isArray(list) ? list : [];
+  for (const raw of arr) {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+    const i = Math.trunc(n);
+    if (i < 0 || i >= maxExclusive) continue;
+    if (seen.has(i)) continue;
+    seen.add(i);
+    out.push(i);
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+function buildGroupTokenPlan(groups, spCount, enCount) {
+  const plan = [];
+  const g = Array.isArray(groups) ? groups : [];
+  for (const group of g) {
+    plan.push({
+      spTokens: cleanTokenIdxList(group?.es, spCount),
+      enTokens: cleanTokenIdxList(group?.en, enCount),
+    });
+  }
+  return plan;
+}
+
+function tokenMask(textLen, tokenRanges, tokenIdxs) {
+  const mask = new Array(textLen).fill(false);
+  const idxs = Array.isArray(tokenIdxs) ? tokenIdxs : [];
+  for (const t of idxs) {
+    const r = tokenRanges[t];
+    if (!r) continue;
+    const a = Math.max(0, Math.min(textLen, r.start));
+    const b = Math.max(0, Math.min(textLen, r.end));
+    for (let i = a; i < b; i += 1) mask[i] = true;
+  }
+  return mask;
+}
+
+function updateMasksForCurrentStep() {
+  const step = stepPlan[stepIndex];
+  if (!step) {
+    spHighlightMask = null;
+    enHighlightMask = null;
+    spUnderlineMask = null;
+    enUnderlineMask = null;
+    return;
+  }
+
+  // Highlight: tokens on the ACTIVE side.
+  // Underline: tokens on the OTHER side.
+  if (activeLang === 'sp') {
+    spHighlightMask = tokenMask(spText.length, spTokenRanges, step.spTokens);
+    enHighlightMask = null;
+    spUnderlineMask = null;
+    enUnderlineMask = tokenMask(enText.length, enTokenRanges, step.enTokens);
+  } else {
+    spHighlightMask = null;
+    enHighlightMask = tokenMask(enText.length, enTokenRanges, step.enTokens);
+    spUnderlineMask = tokenMask(spText.length, spTokenRanges, step.spTokens);
+    enUnderlineMask = null;
+  }
+}
+
+function activeTokenRange() {
+  const step = stepPlan[stepIndex];
+  if (!step) return null;
+  const isSp = activeLang === 'sp';
+  const list = isSp ? step.spTokens : step.enTokens;
+  const tokenIdx = list[activeTokenPos];
+  if (!Number.isFinite(tokenIdx)) return null;
+  const ranges = isSp ? spTokenRanges : enTokenRanges;
+  const r = ranges[tokenIdx];
+  if (!r) return null;
+  return { start: r.start, end: r.end };
 }
 
 function computeTokenRanges(text) {
@@ -331,16 +416,15 @@ function buildStepPlanFromAlignment(align) {
 }
 
 function setCurrentStep(idx) {
+  // Keep legacy vars for CSS/render compatibility (not used for logic anymore).
   const s = stepPlan[idx];
   if (!s) return;
-  spGroupStart = s.spStart;
-  spGroupEnd = s.spEnd;
-  enGroupStart = s.enStart;
-  enGroupEnd = s.enEnd;
+  spGroupStart = 0;
+  spGroupEnd = spText.length;
+  enGroupStart = 0;
+  enGroupEnd = enText.length;
 
-  // Ensure cursors don't drift behind group starts.
-  if (spCursorIndex < spGroupStart) spCursorIndex = spGroupStart;
-  if (enCursorIndex < enGroupStart) enCursorIndex = enGroupStart;
+  updateMasksForCurrentStep();
 }
 
 function initOnscreenKeyboard() {
@@ -432,8 +516,6 @@ function nowMs() {
 
 function resetTimerUi() {
   el.timeLeft.textContent = `${durationSeconds.toFixed(1)}`;
-  el.timeBarFill.style.width = '0%';
-  el.timeBar.setAttribute('aria-valuenow', '0');
 }
 
 function totalDurationMs() {
@@ -450,10 +532,6 @@ function stopTimer() {
 function updateTimerUi(elapsedMs) {
   const leftMs = Math.max(0, totalDurationMs() - elapsedMs);
   el.timeLeft.textContent = `${(leftMs / 1000).toFixed(1)}`;
-
-  const pct = Math.max(0, Math.min(1, elapsedMs / totalDurationMs())) * 100;
-  el.timeBarFill.style.width = `${pct.toFixed(1)}%`;
-  el.timeBar.setAttribute('aria-valuenow', String(Math.round(pct)));
 }
 
 function computeResults(elapsedMs) {
@@ -573,29 +651,18 @@ function buildSpansForReference(referenceText, containerEl) {
   return { spans, endEl };
 }
 
-function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive, groupStart, groupEnd, underlineStart, underlineEnd) {
-  let effectiveGroupEnd = groupEnd;
-  if (isActive && Number.isFinite(groupStart) && Number.isFinite(groupEnd)) {
-    // Don't highlight trailing whitespace at the end of the active group.
-    // (Keep internal spaces inside the group highlighted.)
-    let e = Math.max(0, Math.min(text.length, groupEnd));
-    const s = Math.max(0, Math.min(text.length, groupStart));
-    while (e > s && /\s/.test(text[e - 1] || '')) e -= 1;
-    effectiveGroupEnd = e;
-  }
+function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive, highlightMask, underlineMask) {
 
   for (let i = 0; i < spans.length; i += 1) {
     const span = spans[i];
     span.classList.remove('correct', 'incorrect', 'cursor', 'group', 'xlate');
 
-    if (isActive && Number.isFinite(groupStart) && Number.isFinite(groupEnd)) {
-      if (i >= groupStart && i < effectiveGroupEnd) span.classList.add('group');
+    if (isActive && highlightMask && highlightMask[i]) {
+      span.classList.add('group');
     }
 
-    if (!isActive && Number.isFinite(underlineStart) && Number.isFinite(underlineEnd)) {
-      if (i >= underlineStart && i < underlineEnd && !span.classList.contains('ws')) {
-        span.classList.add('xlate');
-      }
+    if (!isActive && underlineMask && underlineMask[i] && !span.classList.contains('ws')) {
+      span.classList.add('xlate');
     }
 
     if (typedBuffer[i] !== undefined) {
@@ -622,10 +689,8 @@ function updateRenderFromBuffers() {
     spCharSpans,
     spCursorEndEl,
     activeLang === 'sp',
-    spGroupStart,
-    spGroupEnd,
-    activeLang === 'en' ? spGroupStart : null,
-    activeLang === 'en' ? spGroupEnd : null,
+    spHighlightMask,
+    spUnderlineMask,
   );
   renderTypingRow(
     enText,
@@ -634,10 +699,8 @@ function updateRenderFromBuffers() {
     enCharSpans,
     enCursorEndEl,
     activeLang === 'en',
-    enGroupStart,
-    enGroupEnd,
-    activeLang === 'sp' ? enGroupStart : null,
-    activeLang === 'sp' ? enGroupEnd : null,
+    enHighlightMask,
+    enUnderlineMask,
   );
 }
 
@@ -791,24 +854,8 @@ function spreadSpanishForEnglish() {
 }
 
 function updateAlignmentForCurrentSentence(alignPayload) {
-  if (!currentItem) return;
-  if (alignPayload?.sp_id !== currentItem.sp_id) return;
-  currentItem.align = alignPayload.align || {};
-
-  const prevStep = stepIndex;
-  stepPlan = buildStepPlanFromAlignment(currentItem.align);
-  if (!stepPlan.length) {
-    stepPlan = [{ spStart: 0, spEnd: spText.length, enStart: 0, enEnd: enText.length }];
-  }
-  stepIndex = Math.max(0, Math.min(stepPlan.length - 1, prevStep));
-  setCurrentStep(stepIndex);
-  advanceIfNeeded();
-  updateRenderFromBuffers();
-
-  // Re-apply spacing once the real alignment arrives (needs layout).
-  requestAnimationFrame(() => {
-    spreadSpanishForEnglish();
-  });
+  // No-op: learn-language now uses precomputed `groups` from the dataset.
+  void alignPayload;
 }
 
 async function fetchAlignment(spId) {
@@ -817,33 +864,89 @@ async function fetchAlignment(spId) {
 }
 
 function advanceIfNeeded() {
-  // Advance through empty groups and switch focus per step:
-  // Spanish group -> English group -> next step.
+  // Within a group:
+  // - Type all selected tokens on Spanish side (jump token-to-token)
+  // - Flip and type all selected tokens on English side
+  // - Move to next group
   let guard = 0;
-  while (guard < 10) {
+  while (guard < 100) {
     guard += 1;
 
-    if (stepIndex >= stepPlan.length) return;
-    const s = stepPlan[stepIndex];
-    if (!s) return;
+    if (stepIndex >= stepPlan.length) {
+      updateMasksForCurrentStep();
+      return;
+    }
 
-    // Sync group bounds.
-    setCurrentStep(stepIndex);
+    const step = stepPlan[stepIndex];
+    if (!step) return;
 
-    if (activeLang === 'sp') {
-      const done = spCursorIndex >= spGroupEnd || spGroupEnd <= spGroupStart;
-      if (!done) return;
-      setActiveLang('en');
+    const isSp = activeLang === 'sp';
+    const list = isSp ? step.spTokens : step.enTokens;
+    const ranges = isSp ? spTokenRanges : enTokenRanges;
+
+    // If this side has no tokens for the group, flip/advance immediately.
+    if (!list.length) {
+      activeTokenPos = 0;
+      if (isSp) {
+        setActiveLang('en');
+      } else {
+        stepIndex += 1;
+        setActiveLang('sp');
+      }
+      setCurrentStep(stepIndex);
       continue;
     }
 
-    const done = enCursorIndex >= enGroupEnd || enGroupEnd <= enGroupStart;
-    if (!done) return;
+    // Clamp token position.
+    if (activeTokenPos < 0) activeTokenPos = 0;
+    if (activeTokenPos >= list.length) activeTokenPos = list.length - 1;
 
-    stepIndex += 1;
-    if (stepIndex >= stepPlan.length) return;
+    const tokenIdx = list[activeTokenPos];
+    const r = ranges[tokenIdx];
+    if (!r) {
+      activeTokenPos += 1;
+      continue;
+    }
+
+    let cursor = isSp ? spCursorIndex : enCursorIndex;
+    if (cursor < r.start) cursor = r.start;
+
+    // Token complete -> jump to next token or flip/advance group.
+    if (cursor >= r.end) {
+      if (activeTokenPos + 1 < list.length) {
+        activeTokenPos += 1;
+        const nextR = ranges[list[activeTokenPos]];
+        cursor = nextR ? nextR.start : cursor;
+        if (isSp) spCursorIndex = cursor;
+        else enCursorIndex = cursor;
+        continue;
+      }
+
+      // Finished all tokens on this side.
+      activeTokenPos = 0;
+      if (isSp) {
+        setActiveLang('en');
+        // Place cursor at first English token start.
+        const first = step.enTokens[0];
+        const firstR = enTokenRanges[first];
+        if (firstR) enCursorIndex = firstR.start;
+      } else {
+        stepIndex += 1;
+        setActiveLang('sp');
+        const nextStep = stepPlan[stepIndex];
+        const first = nextStep?.spTokens?.[0];
+        const firstR = spTokenRanges[first];
+        if (firstR) spCursorIndex = firstR.start;
+      }
+      setCurrentStep(stepIndex);
+      continue;
+    }
+
+    // Persist cursor clamping.
+    if (isSp) spCursorIndex = cursor;
+    else enCursorIndex = cursor;
     setCurrentStep(stepIndex);
-    setActiveLang('sp');
+    return;
   }
 }
 
@@ -893,21 +996,29 @@ function startSentence(item) {
   spBoundarySpaceSpans = computeBoundaryWhitespaceSpans(spText, spTokenRanges, spCharSpans);
   enBoundarySpaceSpans = computeBoundaryWhitespaceSpans(enText, enTokenRanges, enCharSpans);
 
-  stepPlan = buildStepPlanFromGroups(item.groups || []);
+  stepPlan = buildGroupTokenPlan(item.groups || [], spTokenRanges.length, enTokenRanges.length);
   if (!stepPlan.length) {
-    stepPlan = [{ spStart: 0, spEnd: spText.length, enStart: 0, enEnd: enText.length }];
+    stepPlan = [{
+      spTokens: cleanTokenIdxList(Array.from({ length: spTokenRanges.length }, (_, i) => i), spTokenRanges.length),
+      enTokens: cleanTokenIdxList(Array.from({ length: enTokenRanges.length }, (_, i) => i), enTokenRanges.length),
+    }];
   }
   stepIndex = 0;
+  activeTokenPos = 0;
+  setActiveLang('sp');
   setCurrentStep(stepIndex);
-  spCursorIndex = spGroupStart;
-  enCursorIndex = enGroupStart;
+  const firstSp = stepPlan[0]?.spTokens?.[0];
+  const firstEn = stepPlan[0]?.enTokens?.[0];
+  if (Number.isFinite(firstSp) && spTokenRanges[firstSp]) spCursorIndex = spTokenRanges[firstSp].start;
+  else spCursorIndex = 0;
+  if (Number.isFinite(firstEn) && enTokenRanges[firstEn]) enCursorIndex = enTokenRanges[firstEn].start;
+  else enCursorIndex = 0;
 
   // Derive an alignment-like mapping for spacing adjustments.
   currentItem.align = buildAlignFromGroups(item.groups || [], spTokenRanges.length, enTokenRanges.length);
 
   setMeta('');
 
-  setActiveLang('sp');
   advanceIfNeeded();
   updateRenderFromBuffers();
 
@@ -970,16 +1081,19 @@ function acceptChar(ch) {
     startAttemptIfNeeded();
   }
 
-  // Choose active row state.
   const isSp = activeLang === 'sp';
   const text = isSp ? spText : enText;
-  const groupStart = isSp ? spGroupStart : enGroupStart;
-  const groupEnd = isSp ? spGroupEnd : enGroupEnd;
+  const range = activeTokenRange();
+  if (!range) {
+    advanceIfNeeded();
+    finishSentenceIfDone();
+    updateRenderFromBuffers();
+    return;
+  }
 
   let cursor = isSp ? spCursorIndex : enCursorIndex;
-  if (cursor < groupStart) cursor = groupStart;
-  if (cursor >= groupEnd || cursor >= text.length) {
-    // If the current group is already complete, advance and ignore the key.
+  if (cursor < range.start) cursor = range.start;
+  if (cursor >= range.end || cursor >= text.length) {
     if (isSp) spCursorIndex = cursor;
     else enCursorIndex = cursor;
     advanceIfNeeded();
@@ -989,6 +1103,8 @@ function acceptChar(ch) {
   }
 
   const expected = text[cursor];
+  // In this mode we auto-jump between words; don't treat spaces as input.
+  if (ch === ' ' && expected !== ' ') return;
   roundTyped += 1;
   if (ch === expected) roundCorrect += 1;
   if (!/\s/.test(ch)) roundNonSpace += 1;
@@ -1011,15 +1127,27 @@ function handleBackspace() {
   if (!inputEnabled) return;
 
   const isSp = activeLang === 'sp';
-  const groupStart = isSp ? spGroupStart : enGroupStart;
+  const range = activeTokenRange();
+  const ranges = isSp ? spTokenRanges : enTokenRanges;
+  const step = stepPlan[stepIndex];
+  const list = isSp ? step?.spTokens : step?.enTokens;
+  if (!range || !Array.isArray(list) || !list.length) return;
 
+  let cursor = isSp ? spCursorIndex : enCursorIndex;
+  if (cursor <= range.start) {
+    if (activeTokenPos <= 0) return;
+    activeTokenPos -= 1;
+    const prevR = ranges[list[activeTokenPos]];
+    if (prevR) cursor = prevR.end;
+  }
+
+  if (cursor <= 0) return;
+  cursor -= 1;
   if (isSp) {
-    if (spCursorIndex <= groupStart) return;
-    spCursorIndex -= 1;
+    spCursorIndex = cursor;
     spTypedBuffer[spCursorIndex] = undefined;
   } else {
-    if (enCursorIndex <= groupStart) return;
-    enCursorIndex -= 1;
+    enCursorIndex = cursor;
     enTypedBuffer[enCursorIndex] = undefined;
   }
 
