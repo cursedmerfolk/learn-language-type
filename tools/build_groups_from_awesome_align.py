@@ -180,6 +180,11 @@ def main(argv: list[str] | None = None) -> int:
             "Default: drop such records entirely."
         ),
     )
+    ap.add_argument(
+        "--allow-spanish-emdash",
+        action="store_true",
+        help="Allow records whose Spanish sentence contains the em dash character (—). Default: drop them.",
+    )
     args = ap.parse_args(argv)
 
     if not args.data.exists():
@@ -196,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     n_written = 0
     n_dup_es = 0
     n_dropped_empty_group = 0
+    n_dropped_emdash = 0
     seen_es: set[str] = set()
 
     with args.data.open("r", encoding="utf-8", errors="replace") as data_f, args.aligned.open(
@@ -210,6 +216,15 @@ def main(argv: list[str] | None = None) -> int:
             if not parsed:
                 continue
             es_tokens, en_tokens = parsed
+
+            if (not args.allow_spanish_emdash) and any("—" in t for t in es_tokens):
+                n_dropped_emdash += 1
+                if meta_iter is not None:
+                    try:
+                        next(meta_iter)
+                    except StopIteration:
+                        meta_iter = None
+                continue
 
             if not args.allow_duplicate_spanish:
                 es_key = " ".join(es_tokens)
@@ -283,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Skipped {n_dup_es} duplicate Spanish sentences")
     if n_dropped_empty_group and not args.allow_empty_groups:
         print(f"Dropped {n_dropped_empty_group} records due to empty-sided groups")
+    if n_dropped_emdash and not args.allow_spanish_emdash:
+        print(f"Dropped {n_dropped_emdash} records due to Spanish em dash")
 
     if not args.no_meta and not args.meta.exists():
         print(f"Note: meta file not found ({args.meta}); output omitted sp_id/en_id")

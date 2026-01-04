@@ -238,24 +238,49 @@ function expectedCharAtActiveCursor() {
   return text[cursor];
 }
 
-function mapUsKeyToVirtualEsChar(evKey, expectedChar) {
-  // Map common Spanish-only letters when using an ENG-US physical layout.
-  // Keep this conservative by only substituting when the expected char matches.
-  if (expectedChar === '¡' && evKey === '!') return '¡';
-  if (expectedChar === '¿' && (evKey === '?' || evKey === '+')) return '¿';
+function mapUsCodeToVirtualEsChar(ev) {
+  // Spanish-row virtualization for an ENG-US physical keyboard.
+  // This is position-based (event.code) to match the on-screen Spanish layout.
+  const shift = Boolean(ev.shiftKey || (ev.getModifierState && ev.getModifierState('Shift')));
 
-  if (expectedChar === 'ñ' && evKey === ';') return 'ñ';
-  if (expectedChar === 'Ñ' && evKey === ':') return 'Ñ';
+  switch (ev.code) {
+    // US: -/_  => ES: '/?'
+    case 'Minus':
+      return shift ? '?' : "'";
+    // US: =/+  => ES: ¡/¿
+    case 'Equal':
+      return shift ? '¿' : '¡';
 
-  // Cedilla is not typable on US; allow using c/C when it's what's expected.
-  if (expectedChar === 'ç' && evKey === 'c') return 'ç';
-  if (expectedChar === 'Ç' && evKey === 'C') return 'Ç';
+    // US: [/{  => ES: ` /^  (per OSK layout)
+    case 'BracketLeft':
+      return shift ? '^' : '`';
+    // US: ]/}  => ES: + /*  (per OSK layout)
+    case 'BracketRight':
+      return shift ? '*' : '+';
+    // US: \/|  => ES: ç/Ç  (per OSK layout)
+    case 'Backslash':
+      return shift ? 'Ç' : 'ç';
 
-  // Allow producing the standalone accent marks if they ever appear.
-  if (expectedChar === '´' && evKey === "'") return '´';
-  if (expectedChar === '¨' && evKey === '"') return '¨';
+    // US: ;/:  => ES: ñ/Ñ
+    case 'Semicolon':
+      return shift ? 'Ñ' : 'ñ';
+    // US: '/"  => ES: ´/¨ (accent dead-keys)
+    case 'Quote':
+      return shift ? '¨' : '´';
 
-  return evKey;
+    // US: ,/<  => ES: ,/;
+    case 'Comma':
+      return shift ? ';' : ',';
+    // US: ./>  => ES: ./: 
+    case 'Period':
+      return shift ? ':' : '.';
+    // US: //?  => ES: -/_
+    case 'Slash':
+      return shift ? '_' : '-';
+
+    default:
+      return ev.key;
+  }
 }
 
 function computeTokenRanges(text) {
@@ -1406,14 +1431,14 @@ function handleTypingKeydown(ev) {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
 
   const isSpanishRow = activeLang === 'sp';
-  const expectedChar = expectedCharAtActiveCursor();
+  const virtualChar = isSpanishRow ? mapUsCodeToVirtualEsChar(ev) : ev.key;
 
   // Only run ESP virtual keyboard behavior while typing on the Spanish row.
   // On the English row, treat all keys literally.
   if (!isSpanishRow && deadKey) deadKey = null;
 
   if (isSpanishRow) {
-    // Dead-key handling (US apostrophe/quote act like Spanish accent keys).
+    // Dead-key handling (Spanish accent keys: ´ and ¨).
     if (deadKey) {
       // Pressing space after the dead-key emits the marker itself.
       if (ev.key === ' ') {
@@ -1424,10 +1449,10 @@ function handleTypingKeydown(ev) {
         return;
       }
 
-      if (ev.key.length === 1) {
+      if (virtualChar && virtualChar.length === 1) {
         ev.preventDefault();
-        const wantUpper = shouldUppercaseFromModifiers(ev, ev.key);
-        const k = String(ev.key);
+        const wantUpper = shouldUppercaseFromModifiers(ev, virtualChar);
+        const k = String(virtualChar);
         const lower = k.toLowerCase();
         const combinedLower = (deadKey === 'acute')
           ? ACUTE_MAP[lower]
@@ -1443,7 +1468,7 @@ function handleTypingKeydown(ev) {
 
         // Not combinable: emit the marker then the typed key.
         acceptChar(marker);
-        acceptChar(mapUsKeyToVirtualEsChar(ev.key, expectedChar));
+        acceptChar(virtualChar);
         return;
       }
 
@@ -1470,16 +1495,14 @@ function handleTypingKeydown(ev) {
   }
 
   if (isSpanishRow) {
-    // Start dead-key mode if apostrophe is pressed (acute accent), unless we are
-    // expecting a literal apostrophe or a standalone acute marker.
-    if (ev.key === "'" && expectedChar !== "'" && expectedChar !== '´') {
+    // Start dead-key mode when the Spanish accent keys are pressed.
+    if (virtualChar === '´') {
       ev.preventDefault();
       deadKey = 'acute';
       return;
     }
 
-    // Diaeresis dead-key (for ü), unless expecting a literal quote or standalone diaeresis.
-    if (ev.key === '"' && expectedChar !== '"' && expectedChar !== '¨') {
+    if (virtualChar === '¨') {
       ev.preventDefault();
       deadKey = 'diaeresis';
       return;
@@ -1488,7 +1511,7 @@ function handleTypingKeydown(ev) {
 
   if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
     ev.preventDefault();
-    if (isSpanishRow) acceptChar(mapUsKeyToVirtualEsChar(ev.key, expectedChar));
+    if (isSpanishRow) acceptChar(virtualChar);
     else acceptChar(ev.key);
   }
 }
