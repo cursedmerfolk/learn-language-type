@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         "--profanity-threshold",
         type=float,
         default=0.06,
-        help="Drop sentences when profanity probability >= this threshold (0..1). Default: 0.10",
+        help="Drop sentences when profanity probability >= this threshold (0..1). Default: 0.06",
     )
     ap.add_argument(
         "--allow-duplicate-spanish",

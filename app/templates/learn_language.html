@@ -9,7 +9,32 @@
   </head>
   <body>
     <main class="container learnContainer">
-      <h1>Learn Language</h1>
+      <h1 class="learnTitle">
+        Learn Language
+        <button
+          id="learnInfoBtn"
+          class="learnInfoBtn"
+          type="button"
+          aria-label="About Learn Language"
+          aria-controls="learnInfoDialog"
+          aria-expanded="false"
+        >
+          i
+        </button>
+      </h1>
+
+      <div class="learnHeaderActions" aria-label="Actions">
+        <button id="newRoundBtn" class="btn" type="button">New round</button>
+      </div>
+
+      <dialog id="learnInfoDialog" class="dialog learnInfoDialog" aria-label="About Learn Language">
+        <form method="dialog" class="dialog">
+          <div id="learnInfoDialogBody" class="learnInfoDialogBody">Loading…</div>
+          <div class="row dialogActions">
+            <button class="btn" value="close">Close</button>
+          </div>
+        </form>
+      </dialog>
 
       <section class="row" aria-label="Status">
         <div class="muted">Time: <span id="timeLeft">60.0</span>s</div>
@@ -42,10 +67,6 @@
         </div>
       </section>
 
-      <section class="row actions" aria-label="Actions">
-        <button id="newRoundBtn" class="btn" type="button">New round</button>
-      </section>
-
       <dialog id="resultsDialog">
         <form method="dialog" class="dialog">
           <h2>Results</h2>
@@ -68,6 +89,119 @@
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.7.106/build/index.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js"></script>
+    <script>
+      (function () {
+        if (!window.anime || !window.HTMLDialogElement) return;
+
+        const nativeShowModal = HTMLDialogElement.prototype.showModal;
+        const nativeShow = HTMLDialogElement.prototype.show;
+        const nativeClose = HTMLDialogElement.prototype.close;
+
+        function animateIn(dialog) {
+          try {
+            window.anime.remove(dialog);
+            dialog.style.opacity = '0';
+            dialog.style.transform = 'translateY(16px)';
+            window.anime({
+              targets: dialog,
+              opacity: [0, 1],
+              translateY: [16, 0],
+              duration: 220,
+              easing: 'easeOutCubic',
+              complete: function () {
+                dialog.style.opacity = '';
+                dialog.style.transform = '';
+              }
+            });
+          } catch {
+            // no-op
+          }
+        }
+
+        function animateOut(dialog, done) {
+          try {
+            window.anime.remove(dialog);
+            window.anime({
+              targets: dialog,
+              opacity: [1, 0],
+              translateY: [0, 16],
+              duration: 180,
+              easing: 'easeInCubic',
+              complete: done
+            });
+          } catch {
+            done();
+          }
+        }
+
+        HTMLDialogElement.prototype.showModal = function () {
+          nativeShowModal.call(this);
+          animateIn(this);
+        };
+
+        HTMLDialogElement.prototype.show = function () {
+          nativeShow.call(this);
+          animateIn(this);
+        };
+
+        HTMLDialogElement.prototype.close = function (returnValue) {
+          if (!this.open) {
+            nativeClose.call(this, returnValue);
+            return;
+          }
+          if (this.dataset.animClosing === '1') return;
+          this.dataset.animClosing = '1';
+          const dialog = this;
+          animateOut(dialog, function () {
+            dialog.dataset.animClosing = '0';
+            dialog.style.opacity = '';
+            dialog.style.transform = '';
+            nativeClose.call(dialog, returnValue);
+          });
+        };
+
+        // Animate Esc-close too.
+        document.querySelectorAll('dialog').forEach(function (d) {
+          d.addEventListener('cancel', function (ev) {
+            ev.preventDefault();
+            d.close(d.returnValue);
+          });
+        });
+      })();
+    </script>
     <script src="{{ url_for('static', filename='learn_language.js') }}"></script>
+    <script>
+      (function () {
+        const btn = document.getElementById('learnInfoBtn');
+        const dialog = document.getElementById('learnInfoDialog');
+        const body = document.getElementById('learnInfoDialogBody');
+        if (!btn || !dialog || !body) return;
+
+        let loaded = false;
+        async function ensureLoaded() {
+          if (loaded) return;
+          const url = "{{ url_for('static', filename='learn_language_info.html') }}";
+          const resp = await fetch(url, { cache: 'no-cache' });
+          if (!resp.ok) throw new Error('Failed to load info text');
+          body.innerHTML = await resp.text();
+          loaded = true;
+        }
+
+        btn.addEventListener('click', async function () {
+          btn.setAttribute('aria-expanded', 'true');
+          try {
+            await ensureLoaded();
+          } catch (e) {
+            body.textContent = 'Failed to load help text.';
+          }
+          dialog.showModal();
+        });
+
+        dialog.addEventListener('close', function () {
+          btn.setAttribute('aria-expanded', 'false');
+        });
+      })();
+    </script>
   </body>
 </html>
