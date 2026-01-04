@@ -45,18 +45,75 @@ class Meta:
     en_id: int | None
 
 
-def parse_data_line(line: str) -> tuple[list[str], list[str]] | None:
+def parse_data_line(line: str) -> tuple[list[str], list[str], str, str] | None:
     s = line.strip("\n")
     if not s:
         return None
     if "|||" not in s:
         return None
     left, right = s.split("|||", 1)
-    es = [t for t in left.strip().split() if t]
-    en = [t for t in right.strip().split() if t]
+    es_text = left.strip()
+    en_text = right.strip()
+    es = [t for t in es_text.split() if t]
+    en = [t for t in en_text.split() if t]
     if not es or not en:
         return None
-    return es, en
+    return es, en, es_text, en_text
+
+
+def _try_init_alt_profanity_check_predict_prob():
+    """Best-effort alt-profanity-check predictor.
+
+    `alt-profanity-check` exposes a `profanity_check.predict_prob()` API.
+    """
+
+    try:
+        from profanity_check import predict_prob  # type: ignore
+
+        return predict_prob
+    except Exception:
+        return None
+
+
+def init_better_profanity():
+    try:
+        from better_profanity import profanity  # type: ignore
+
+        profanity.load_censor_words()
+        return profanity
+    except Exception as e:  # noqa: BLE001
+        raise SystemExit(
+            "Missing dependency 'better-profanity'. Install it (e.g. pip install better-profanity). "
+            f"Import error: {e}"
+        )
+
+
+def profanity_prob(predict_prob, text: str) -> float:
+    """Return a probability in [0, 1] that `text` is profane."""
+
+    try:
+        # alt-profanity-check expects a list of strings.
+        probs = predict_prob([text])
+        if probs is None:
+            return 1.0
+        # numpy array / list-like
+        p0 = float(probs[0])
+        if p0 < 0:
+            return 0.0
+        if p0 > 1:
+            return 1.0
+        return p0
+    except Exception:
+        # If the model/tokenizer misbehaves on weird unicode, treat as profane
+        # so we err on the side of skipping.
+        return 1.0
+
+
+def contains_profanity_better(profanity, text: str) -> bool:
+    try:
+        return bool(profanity.contains_profanity(text))
+    except Exception:
+        return True
 
 
 def parse_align_line(line: str) -> list[tuple[int, int]]:
@@ -168,6 +225,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--output", type=Path, default=Path("trimmed_sentence_groups.jsonl"))
     ap.add_argument("--limit", type=int, default=None, help="Process at most this many lines")
     ap.add_argument(
+        "--max-chars",
+        type=int,
+        default=80,
+        help="Skip sentences where either side exceeds this length (character count).",
+    )
+    ap.add_argument(
+        "--allow-profanity",
+        action="store_true",
+        help="Allow sentences that contain profanity. Default: drop them.",
+    )
+    ap.add_argument(
+        "--profanity-threshold",
+        type=float,
+        default=0.06,
+        help="Drop sentences when profanity probability >= this threshold (0..1). Default: 0.10",
+    )
+    ap.add_argument(
         "--allow-duplicate-spanish",
         action="store_true",
         help="Allow duplicate Spanish sentences (by tokenized Spanish side). Default: dedupe and keep first occurrence.",
@@ -192,6 +266,25 @@ def main(argv: list[str] | None = None) -> int:
     if not args.aligned.exists():
         raise SystemExit(f"Aligned file not found: {args.aligned}")
 
+    if args.max_chars <= 0:
+        raise SystemExit("--max-chars must be > 0")
+
+    predict_prob = None
+    better = None
+    if not args.allow_profanity:
+        # Filtering order (per line):
+        # 1) better-profanity wordlist check
+        # 2) alt-profanity-check probability threshold
+        better = init_better_profanity()
+        predict_prob = _try_init_alt_profanity_check_predict_prob()
+        if predict_prob is None:
+            raise SystemExit(
+                "alt-profanity-check could not be initialized. Install it (pip install alt-profanity-check)."
+            )
+
+    if not (0.0 <= float(args.profanity_threshold) <= 1.0):
+        raise SystemExit("--profanity-threshold must be between 0 and 1")
+
     meta_iter: Iterator[Meta] | None = None
     if not args.no_meta and args.meta.exists():
         meta_iter = iter_meta(args.meta)
@@ -202,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
     n_dup_es = 0
     n_dropped_empty_group = 0
     n_dropped_emdash = 0
+    n_dropped_too_long = 0
+    n_dropped_profanity = 0
     seen_es: set[str] = set()
 
     with args.data.open("r", encoding="utf-8", errors="replace") as data_f, args.aligned.open(
@@ -214,8 +309,45 @@ def main(argv: list[str] | None = None) -> int:
             n_read += 1
             parsed = parse_data_line(data_line)
             if not parsed:
+                if meta_iter is not None:
+                    try:
+                        next(meta_iter)
+                    except StopIteration:
+                        meta_iter = None
                 continue
-            es_tokens, en_tokens = parsed
+            es_tokens, en_tokens, es_text, en_text = parsed
+
+            if len(es_text) > args.max_chars or len(en_text) > args.max_chars:
+                n_dropped_too_long += 1
+                if meta_iter is not None:
+                    try:
+                        next(meta_iter)
+                    except StopIteration:
+                        meta_iter = None
+                continue
+
+            if better is not None and (
+                contains_profanity_better(better, es_text) or contains_profanity_better(better, en_text)
+            ):
+                n_dropped_profanity += 1
+                if meta_iter is not None:
+                    try:
+                        next(meta_iter)
+                    except StopIteration:
+                        meta_iter = None
+                continue
+
+            if predict_prob is not None:
+                p_es = profanity_prob(predict_prob, es_text)
+                p_en = profanity_prob(predict_prob, en_text)
+                if max(p_es, p_en) >= float(args.profanity_threshold):
+                    n_dropped_profanity += 1
+                    if meta_iter is not None:
+                        try:
+                            next(meta_iter)
+                        except StopIteration:
+                            meta_iter = None
+                    continue
 
             if (not args.allow_spanish_emdash) and any("—" in t for t in es_tokens):
                 n_dropped_emdash += 1
@@ -300,6 +432,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Dropped {n_dropped_empty_group} records due to empty-sided groups")
     if n_dropped_emdash and not args.allow_spanish_emdash:
         print(f"Dropped {n_dropped_emdash} records due to Spanish em dash")
+    if n_dropped_too_long:
+        print(f"Dropped {n_dropped_too_long} records due to length > {args.max_chars}")
+    if n_dropped_profanity and not args.allow_profanity:
+        print(
+            f"Dropped {n_dropped_profanity} records due to profanity (threshold={float(args.profanity_threshold):.2f})"
+        )
 
     if not args.no_meta and not args.meta.exists():
         print(f"Note: meta file not found ({args.meta}); output omitted sp_id/en_id")

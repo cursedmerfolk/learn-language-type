@@ -1,10 +1,4 @@
 Flask==3.0.3
-simalign==0.4
 awesome-align
-# Profanity filtering (Python 3.13-compatible)
+alt-profanity-check
 better-profanity
-
-# profanity-filter currently depends on ordered-set-stubs, which has no
-# matching distribution for Python 3.13 in this environment. If you need it on
-# 3.13, install it with --no-deps and install its runtime deps manually.
-profanity-filter; python_version < "3.13"

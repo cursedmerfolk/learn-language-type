@@ -239,48 +239,48 @@ function expectedCharAtActiveCursor() {
 }
 
 function mapUsCodeToVirtualEsChar(ev) {
-  // Spanish-row virtualization for an ENG-US physical keyboard.
-  // This is position-based (event.code) to match the on-screen Spanish layout.
-  const shift = Boolean(ev.shiftKey || (ev.getModifierState && ev.getModifierState('Shift')));
-
-  switch (ev.code) {
-    // US: -/_  => ES: '/?'
-    case 'Minus':
-      return shift ? '?' : "'";
-    // US: =/+  => ES: ¡/¿
-    case 'Equal':
-      return shift ? '¿' : '¡';
-
-    // US: [/{  => ES: ` /^  (per OSK layout)
-    case 'BracketLeft':
-      return shift ? '^' : '`';
-    // US: ]/}  => ES: + /*  (per OSK layout)
-    case 'BracketRight':
-      return shift ? '*' : '+';
-    // US: \/|  => ES: ç/Ç  (per OSK layout)
-    case 'Backslash':
-      return shift ? 'Ç' : 'ç';
-
-    // US: ;/:  => ES: ñ/Ñ
-    case 'Semicolon':
-      return shift ? 'Ñ' : 'ñ';
-    // US: '/"  => ES: ´/¨ (accent dead-keys)
-    case 'Quote':
-      return shift ? '¨' : '´';
-
-    // US: ,/<  => ES: ,/;
-    case 'Comma':
-      return shift ? ';' : ',';
-    // US: ./>  => ES: ./: 
-    case 'Period':
-      return shift ? ':' : '.';
-    // US: //?  => ES: -/_
-    case 'Slash':
-      return shift ? '_' : '-';
-
+    
+    // This maps from the US-reported `key` to the Spanish layout character at that position.
+    switch (ev.key) {
+    case '-':
+        return "'";
+    case '_':
+        return '?';
+    case '=':
+        return '¡';
+    case '+':
+        return '¿';
+    case '[':
+        return '`';
+    case '{':
+        return '^';
+    case ']':
+        return '+';
+    case '}':
+        return '*';
+    case '\\':
+        return 'ç';
+    case '|':
+        return 'Ç';
+    case ';':
+        return 'ñ';
+    case ':':
+        return 'Ñ';
+    case "'":
+        return '´';
+    case '"':
+        return '¨';
+    case '/':
+        return '-';
+    case '?':
+        return '_';
+    case '<':
+        return ';';
+    case '>':
+        return ':';
     default:
-      return ev.key;
-  }
+        return ev.key;
+    }
 }
 
 function computeTokenRanges(text) {

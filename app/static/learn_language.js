@@ -249,6 +249,9 @@ function mapUsCodeToVirtualEsChar(ev) {
     // US: -/_  => ES: '/?'
     case 'Minus':
       return shift ? '?' : "'";
+    // Some environments may report a non-standard code here.
+    case 'Underscore':
+      return '?';
     // US: =/+  => ES: ¡/¿
     case 'Equal':
       return shift ? '¿' : '¡';
@@ -281,7 +284,48 @@ function mapUsCodeToVirtualEsChar(ev) {
       return shift ? '_' : '-';
 
     default:
-      return ev.key;
+      // Fallback for environments where `code` is missing/odd.
+      // This maps from the US-reported `key` to the Spanish layout character at that position.
+      switch (ev.key) {
+        case '-':
+          return "'";
+        case '_':
+          return '?';
+        case '=':
+          return '¡';
+        case '+':
+          return '¿';
+        case '[':
+          return '`';
+        case '{':
+          return '^';
+        case ']':
+          return '+';
+        case '}':
+          return '*';
+        case '\\':
+          return 'ç';
+        case '|':
+          return 'Ç';
+        case ';':
+          return 'ñ';
+        case ':':
+          return 'Ñ';
+        case "'":
+          return '´';
+        case '"':
+          return '¨';
+        case '/':
+          return '-';
+        case '?':
+          return '_';
+        case '<':
+          return ';';
+        case '>':
+          return ':';
+        default:
+          return ev.key;
+      }
   }
 }
 
