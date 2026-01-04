@@ -1541,6 +1541,12 @@ function handleTypingKeydown(ev) {
   if (isSpanishRow) {
     // Dead-key handling (Spanish accent keys: ´ and ¨).
     if (deadKey) {
+      // Allow using Shift/CapsLock to type uppercase accented letters.
+      // Pressing Shift after the accent should not cancel the dead-key.
+      if (ev.key === 'Shift' || ev.key === 'CapsLock') {
+        return;
+      }
+
       // Pressing space after the dead-key emits the marker itself.
       if (ev.key === ' ') {
         ev.preventDefault();
@@ -1623,6 +1629,32 @@ el.typingBox.addEventListener('keydown', (ev) => {
 
 el.englishTypingBox.addEventListener('keydown', (ev) => {
   handleTypingKeydown(ev);
+});
+
+function focusActiveTypingBoxFromUserGesture() {
+  // Don't steal focus while a modal dialog is open.
+  try {
+    if (document.querySelector('dialog[open]')) return;
+  } catch {
+    // ignore
+  }
+
+  const target = activeLang === 'en' ? el.englishTypingBox : el.typingBox;
+  if (!target) return;
+  try {
+    target.focus({ preventScroll: true });
+  } catch {
+    target.focus();
+  }
+}
+
+// If focus is lost (e.g. user switches tabs), allow a click anywhere
+// to re-activate typing without needing to click directly on the text.
+window.addEventListener('click', (ev) => {
+  // Ignore clicks inside an open dialog.
+  const t = ev.target;
+  if (t && typeof t === 'object' && t.closest && t.closest('dialog[open]')) return;
+  focusActiveTypingBoxFromUserGesture();
 });
 
 // Revert symbol row when Shift is released.
