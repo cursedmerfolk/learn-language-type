@@ -19,6 +19,7 @@ let enCursorEndEl = null;
 let enTokenRanges = [];
 
 let spBoundarySpaceSpans = [];
+let enBoundarySpaceSpans = [];
 
 let stepPlan = [];
 let stepIndex = 0;
@@ -634,12 +635,22 @@ function buildSpansForReference(referenceText, containerEl) {
 }
 
 function renderTypingRow(text, typedBuffer, cursorIdx, spans, endEl, isActive, groupStart, groupEnd, underlineStart, underlineEnd) {
+  let effectiveGroupEnd = groupEnd;
+  if (isActive && Number.isFinite(groupStart) && Number.isFinite(groupEnd)) {
+    // Don't highlight trailing whitespace at the end of the active group.
+    // (Keep internal spaces inside the group highlighted.)
+    let e = Math.max(0, Math.min(text.length, groupEnd));
+    const s = Math.max(0, Math.min(text.length, groupStart));
+    while (e > s && /\s/.test(text[e - 1] || '')) e -= 1;
+    effectiveGroupEnd = e;
+  }
+
   for (let i = 0; i < spans.length; i += 1) {
     const span = spans[i];
     span.classList.remove('correct', 'incorrect', 'cursor', 'group', 'xlate');
 
     if (isActive && Number.isFinite(groupStart) && Number.isFinite(groupEnd)) {
-      if (i >= groupStart && i < groupEnd) span.classList.add('group');
+      if (i >= groupStart && i < effectiveGroupEnd) span.classList.add('group');
     }
 
     if (!isActive && Number.isFinite(underlineStart) && Number.isFinite(underlineEnd)) {
@@ -754,70 +765,89 @@ function buildTgtToSrcMap(align) {
 }
 
 function spreadSpanishForEnglish() {
+  // Legacy function name kept for callers; now aligns GROUP columns on both rows.
   if (!currentItem) return;
-  const align = currentItem.align || {};
-  if (!Object.keys(align).length) return;
+  const groups = Array.isArray(currentItem.groups) ? currentItem.groups : [];
+  if (!groups.length) return;
   if (!spTokenRanges.length || !enTokenRanges.length) return;
   if (!spCharSpans.length || !enCharSpans.length) return;
 
   // Start from default spacing each time (avoid accumulating widths).
   resetSpacing(spBoundarySpaceSpans);
+  resetSpacing(enBoundarySpaceSpans);
 
   spBoundarySpaceSpans = computeBoundaryWhitespaceSpans(spText, spTokenRanges, spCharSpans);
+  enBoundarySpaceSpans = computeBoundaryWhitespaceSpans(enText, enTokenRanges, enCharSpans);
 
   const spBoxes = computeTokenBoxes(spTokenRanges, spCharSpans);
   const enBoxes = computeTokenBoxes(enTokenRanges, enCharSpans);
   if (!spBoxes.length || !enBoxes.length) return;
 
-  const tgtToSrc = buildTgtToSrcMap(align);
-  const enWidths = enBoxes.map((b) => b.width);
-
-  const maxEnBySrc = new Array(spBoxes.length).fill(0);
-  for (let j = 0; j < enWidths.length; j += 1) {
-    const srcList = tgtToSrc[String(j)] || [];
-    if (!srcList.length) continue;
-    const w = enWidths[j] || 0;
-    for (const i of srcList) {
-      if (i >= 0 && i < maxEnBySrc.length) maxEnBySrc[i] = Math.max(maxEnBySrc[i], w);
+  function groupWidth(boxes, idxs) {
+    if (!idxs.length) return 0;
+    let left = Infinity;
+    let right = -Infinity;
+    for (const i of idxs) {
+      const b = boxes[i];
+      if (!b) continue;
+      const l = b.center - (b.width / 2);
+      const r = b.center + (b.width / 2);
+      left = Math.min(left, l);
+      right = Math.max(right, r);
     }
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return 0;
+    return Math.max(0, right - left);
   }
 
-  const baseGap = 18;
-  const pad = 16;
-  const desiredWidth = spBoxes.map((b, i) => Math.max(b.width, maxEnBySrc[i] + pad));
-
-  const targetCenters = new Array(spBoxes.length).fill(0);
-  targetCenters[0] = spBoxes[0].center;
-  for (let i = 1; i < spBoxes.length; i += 1) {
-    const prev = targetCenters[i - 1];
-    const delta = (desiredWidth[i - 1] / 2) + (desiredWidth[i] / 2) + baseGap;
-    targetCenters[i] = prev + delta;
+  function trailingBoundarySpan(boundarySpans, tokenCount, idxs) {
+    if (!idxs.length) return null;
+    const endTok = Math.max(...idxs);
+    if (!Number.isFinite(endTok)) return null;
+    if (endTok < 0 || endTok >= tokenCount - 1) return null;
+    return boundarySpans[endTok] || null;
   }
 
-  const natFirst = spBoxes[0].center;
-  const natLast = spBoxes[spBoxes.length - 1].center;
-  const tgtFirst = targetCenters[0];
-  const tgtLast = targetCenters[targetCenters.length - 1];
-  const natMid = (natFirst + natLast) / 2;
-  const tgtMid = (tgtFirst + tgtLast) / 2;
-  const shiftAll = natMid - tgtMid;
-  for (let i = 0; i < targetCenters.length; i += 1) targetCenters[i] += shiftAll;
+  const MIN_GAP_PX = 14;
+  for (let gi = 0; gi < groups.length; gi += 1) {
+    const g = groups[gi] || {};
+    const spIdxs = (Array.isArray(g.es) ? g.es : [])
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x) && x >= 0 && x < spBoxes.length);
+    const enIdxs = (Array.isArray(g.en) ? g.en : [])
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x) && x >= 0 && x < enBoxes.length);
 
-  const shifts = spBoxes.map((b, i) => targetCenters[i] - b.center);
-  const spreadFactor = 1.6;
+    const spW = groupWidth(spBoxes, spIdxs);
+    const enW = groupWidth(enBoxes, enIdxs);
+    const desiredContentW = Math.max(spW, enW);
+    if (desiredContentW <= 0) continue;
 
-  for (let i = 0; i < spBoundarySpaceSpans.length; i += 1) {
-    const span = spBoundarySpaceSpans[i];
-    if (!span) continue;
+    const spSpan = trailingBoundarySpan(spBoundarySpaceSpans, spBoxes.length, spIdxs);
+    const enSpan = trailingBoundarySpan(enBoundarySpaceSpans, enBoxes.length, enIdxs);
+    if (!spSpan || !enSpan) continue;
 
-    const deltaShift = (shifts[i + 1] ?? 0) - (shifts[i] ?? 0);
-    const extra = Math.max(0, deltaShift) * spreadFactor;
-    if (extra <= 0.5) continue;
+    const spBase = Math.max(0, spSpan.getBoundingClientRect().width || 0);
+    const enBase = Math.max(0, enSpan.getBoundingClientRect().width || 0);
+    const desiredGap = Math.max(MIN_GAP_PX, spBase, enBase);
 
-    const rect = span.getBoundingClientRect();
-    const baseW = Math.max(2, rect.width || 0);
-    span.style.display = 'inline-block';
-    span.style.width = `${(baseW + extra).toFixed(1)}px`;
+    const spExtra = Math.max(0, desiredContentW - spW);
+    const enExtra = Math.max(0, desiredContentW - enW);
+
+    if (spExtra > 0.5) {
+      spSpan.style.display = 'inline-block';
+      spSpan.style.width = `${(desiredGap + spExtra).toFixed(1)}px`;
+    } else if (desiredGap > spBase + 0.5) {
+      spSpan.style.display = 'inline-block';
+      spSpan.style.width = `${desiredGap.toFixed(1)}px`;
+    }
+
+    if (enExtra > 0.5) {
+      enSpan.style.display = 'inline-block';
+      enSpan.style.width = `${(desiredGap + enExtra).toFixed(1)}px`;
+    } else if (desiredGap > enBase + 0.5) {
+      enSpan.style.display = 'inline-block';
+      enSpan.style.width = `${desiredGap.toFixed(1)}px`;
+    }
   }
 }
 function updateAlignmentForCurrentSentence(alignPayload) {
@@ -921,6 +951,7 @@ function startSentence(item) {
   enTokenRanges = computeTokenRanges(enText);
 
   spBoundarySpaceSpans = computeBoundaryWhitespaceSpans(spText, spTokenRanges, spCharSpans);
+  enBoundarySpaceSpans = computeBoundaryWhitespaceSpans(enText, enTokenRanges, enCharSpans);
 
   stepPlan = buildStepPlanFromGroups(item.groups || []);
   if (!stepPlan.length) {
