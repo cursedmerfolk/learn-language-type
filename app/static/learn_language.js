@@ -36,6 +36,10 @@ let enHighlightMask = null;
 let spUnderlineMask = null;
 let enUnderlineMask = null;
 
+// After finishing a token, require a single space keypress to advance.
+let awaitingSpace = false;
+let pendingJump = null;
+
 let durationSeconds = 60;
 let timerRunning = false;
 let startTs = null;
@@ -909,6 +913,11 @@ function advanceIfNeeded() {
   while (guard < 100) {
     guard += 1;
 
+    if (awaitingSpace) {
+      setCurrentStep(stepIndex);
+      return;
+    }
+
     if (stepIndex >= stepPlan.length) {
       updateMasksForCurrentStep();
       return;
@@ -948,35 +957,66 @@ function advanceIfNeeded() {
     let cursor = isSp ? spCursorIndex : enCursorIndex;
     if (cursor < r.start) cursor = r.start;
 
-    // Token complete -> jump to next token or flip/advance group.
+    // Token complete -> require a space before jumping to next token or flipping/advancing.
     if (cursor >= r.end) {
-      if (activeTokenPos + 1 < list.length) {
-        activeTokenPos += 1;
-        const nextR = ranges[list[activeTokenPos]];
-        cursor = nextR ? nextR.start : cursor;
-        if (isSp) spCursorIndex = cursor;
-        else enCursorIndex = cursor;
-        continue;
-      }
+      const jump = {};
 
-      // Finished all tokens on this side.
-      activeTokenPos = 0;
-      if (isSp) {
-        setActiveLang('en');
-        // Place cursor at first English token start.
-        const first = step.enTokens[0];
-        const firstR = enTokenRanges[first];
-        if (firstR) enCursorIndex = firstR.start;
+      if (activeTokenPos + 1 < list.length) {
+        // Next token on the same side.
+        jump.lang = activeLang;
+        jump.stepIndex = stepIndex;
+        jump.tokenPos = activeTokenPos + 1;
+        const nextR = ranges[list[jump.tokenPos]];
+        jump.cursor = nextR ? nextR.start : cursor;
+      } else if (isSp) {
+        // Finished Spanish side for this group.
+        activeTokenPos = 0;
+        if (Array.isArray(step.enTokens) && step.enTokens.length) {
+          jump.lang = 'en';
+          jump.stepIndex = stepIndex;
+          jump.tokenPos = 0;
+          const first = step.enTokens[0];
+          const firstR = enTokenRanges[first];
+          jump.cursor = firstR ? firstR.start : 0;
+        } else {
+          // No English tokens -> advance directly to next group (Spanish).
+          const nextStepIndex = stepIndex + 1;
+          if (nextStepIndex >= stepPlan.length) {
+            stepIndex = nextStepIndex;
+            setCurrentStep(stepIndex);
+            continue;
+          }
+          const nextStep = stepPlan[nextStepIndex];
+          const first = nextStep?.spTokens?.[0];
+          const firstR = spTokenRanges[first];
+          jump.lang = 'sp';
+          jump.stepIndex = nextStepIndex;
+          jump.tokenPos = 0;
+          jump.cursor = firstR ? firstR.start : 0;
+        }
       } else {
-        stepIndex += 1;
-        setActiveLang('sp');
-        const nextStep = stepPlan[stepIndex];
+        // Finished English side for this group -> advance to next group (Spanish).
+        const nextStepIndex = stepIndex + 1;
+        if (nextStepIndex >= stepPlan.length) {
+          stepIndex = nextStepIndex;
+          setCurrentStep(stepIndex);
+          continue;
+        }
+        const nextStep = stepPlan[nextStepIndex];
         const first = nextStep?.spTokens?.[0];
         const firstR = spTokenRanges[first];
-        if (firstR) spCursorIndex = firstR.start;
+        jump.lang = 'sp';
+        jump.stepIndex = nextStepIndex;
+        jump.tokenPos = 0;
+        jump.cursor = firstR ? firstR.start : 0;
       }
+
+      awaitingSpace = true;
+      pendingJump = jump;
+      if (isSp) spCursorIndex = cursor;
+      else enCursorIndex = cursor;
       setCurrentStep(stepIndex);
-      continue;
+      return;
     }
 
     // Persist cursor clamping.
@@ -1042,6 +1082,8 @@ function startSentence(item) {
   }
   stepIndex = 0;
   activeTokenPos = 0;
+  awaitingSpace = false;
+  pendingJump = null;
   setActiveLang('sp');
   setCurrentStep(stepIndex);
   const firstSp = stepPlan[0]?.spTokens?.[0];
@@ -1063,6 +1105,69 @@ function startSentence(item) {
   requestAnimationFrame(() => {
     spreadSpanishForEnglish();
   });
+}
+
+function acceptSpaceToAdvance() {
+  if (!awaitingSpace || !pendingJump) return false;
+
+  const isSp = activeLang === 'sp';
+  const text = isSp ? spText : enText;
+  const buf = isSp ? spTypedBuffer : enTypedBuffer;
+
+  let cursor = isSp ? spCursorIndex : enCursorIndex;
+  cursor = Math.max(0, Math.min(text.length, cursor));
+
+  // Only consume a space keypress to advance.
+  if (cursor < text.length && text[cursor] !== ' ') {
+    // If the underlying text has no space here (should be rare), still require
+    // the keypress but don't write past bounds.
+  }
+
+  roundTyped += 1;
+  const expected = cursor < text.length ? text[cursor] : ' ';
+  if (expected === ' ') roundCorrect += 1;
+
+  if (cursor < text.length) buf[cursor] = ' ';
+  cursor += 1;
+
+  // Jump to the pending destination.
+  const dest = pendingJump;
+  awaitingSpace = false;
+  pendingJump = null;
+
+  // If we're staying on this side, auto-fill any extra spaces up to the target cursor.
+  if (dest.lang === activeLang) {
+    const target = Math.max(0, Math.min(text.length, Number(dest.cursor) || 0));
+    for (let i = cursor; i < target && i < text.length; i += 1) {
+      if (text[i] === ' ') buf[i] = ' ';
+    }
+    cursor = target;
+    activeTokenPos = Number.isFinite(dest.tokenPos) ? dest.tokenPos : activeTokenPos;
+    stepIndex = Number.isFinite(dest.stepIndex) ? dest.stepIndex : stepIndex;
+    if (isSp) spCursorIndex = cursor;
+    else enCursorIndex = cursor;
+    setCurrentStep(stepIndex);
+    advanceIfNeeded();
+    return true;
+  }
+
+  // Switching sides.
+  if (isSp) spCursorIndex = cursor;
+  else enCursorIndex = cursor;
+
+  stepIndex = Number.isFinite(dest.stepIndex) ? dest.stepIndex : stepIndex;
+  activeTokenPos = Number.isFinite(dest.tokenPos) ? dest.tokenPos : 0;
+  setActiveLang(dest.lang);
+
+  if (dest.lang === 'sp') {
+    spCursorIndex = Math.max(0, Math.min(spText.length, Number(dest.cursor) || 0));
+  } else {
+    enCursorIndex = Math.max(0, Math.min(enText.length, Number(dest.cursor) || 0));
+  }
+
+  setCurrentStep(stepIndex);
+  advanceIfNeeded();
+  return true;
 }
 
 async function fetchJson(url) {
@@ -1137,6 +1242,12 @@ function acceptChar(ch) {
     startAttemptIfNeeded();
   }
 
+  if (ch === ' ' && acceptSpaceToAdvance()) {
+    finishSentenceIfDone();
+    updateRenderFromBuffers();
+    return;
+  }
+
   const isSp = activeLang === 'sp';
   const text = isSp ? spText : enText;
   const range = activeTokenRange();
@@ -1159,8 +1270,8 @@ function acceptChar(ch) {
   }
 
   const expected = text[cursor];
-  // In this mode we auto-jump between words; don't treat spaces as input.
-  if (ch === ' ' && expected !== ' ') return;
+  // Only allow space when we're specifically awaiting it to advance.
+  if (ch === ' ') return;
 
   roundTyped += 1;
   if (ch === expected) roundCorrect += 1;
@@ -1182,6 +1293,11 @@ function acceptChar(ch) {
 function handleBackspace() {
   if (!currentItem) return;
   if (!inputEnabled) return;
+
+  if (awaitingSpace) {
+    awaitingSpace = false;
+    pendingJump = null;
+  }
 
   const isSp = activeLang === 'sp';
   const range = activeTokenRange();
