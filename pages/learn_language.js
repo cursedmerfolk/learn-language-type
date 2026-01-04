@@ -416,29 +416,28 @@ function flashOskKey(button) {
 
   const list = Array.isArray(els) ? els : [els];
   for (const elBtn of list) {
-    if (!elBtn || !elBtn.classList) continue;
-    elBtn.classList.add('oskPressed');
-
-    const prev = oskClearTimers.get(elBtn);
-    if (prev) clearTimeout(prev);
-
+    elBtn.classList.add('hg-activeButton');
+    if (oskClearTimers.has(elBtn)) clearTimeout(oskClearTimers.get(elBtn));
     const t = setTimeout(() => {
-      elBtn.classList.remove('oskPressed');
+      elBtn.classList.remove('hg-activeButton');
       oskClearTimers.delete(elBtn);
-    }, 140);
+    }, 75);
     oskClearTimers.set(elBtn, t);
   }
 }
 
-function resetTimerUi() {
-  el.timeLeft.textContent = `${durationSeconds.toFixed(1)}`;
-  setTimeBarPercent(0);
+function nowMs() {
+  return performance.now();
 }
 
-function setTimeBarPercent(pct) {
-  const p = Math.max(0, Math.min(100, pct));
-  if (el.timeBarFill) el.timeBarFill.style.width = `${p.toFixed(1)}%`;
-  if (el.timeBar) el.timeBar.setAttribute('aria-valuenow', String(Math.round(p)));
+function resetTimerUi() {
+  el.timeLeft.textContent = `${durationSeconds.toFixed(1)}`;
+  el.timeBarFill.style.width = '0%';
+  el.timeBar.setAttribute('aria-valuenow', '0');
+}
+
+function totalDurationMs() {
+  return durationSeconds * 1000;
 }
 
 function stopTimer() {
@@ -446,47 +445,22 @@ function stopTimer() {
     clearInterval(timerInterval);
     timerInterval = null;
   }
-  timerRunning = false;
-  startTs = null;
 }
 
-function durationMs() {
-  return durationSeconds * 1000;
-}
+function updateTimerUi(elapsedMs) {
+  const leftMs = Math.max(0, totalDurationMs() - elapsedMs);
+  el.timeLeft.textContent = `${(leftMs / 1000).toFixed(1)}`;
 
-function tick() {
-  if (!timerRunning || !startTs) return;
-  const now = performance.now();
-  const elapsed = now - startTs;
-  const remaining = Math.max(0, durationMs() - elapsed);
-  el.timeLeft.textContent = (remaining / 1000).toFixed(1);
-
-  // Progress bar starts empty and fills to full as time elapses.
-  setTimeBarPercent((elapsed / durationMs()) * 100);
-
-  if (remaining <= 0) {
-    stopTimer();
-    inputEnabled = false;
-    setStatus('Done');
-    setTimeBarPercent(100);
-    showResults(durationMs());
-  }
-}
-
-function startAttemptIfNeeded() {
-  if (timerRunning) return;
-  timerRunning = true;
-  startTs = performance.now();
-  setStatus('Running');
-  timerInterval = setInterval(tick, 50);
+  const pct = Math.max(0, Math.min(1, elapsedMs / totalDurationMs())) * 100;
+  el.timeBarFill.style.width = `${pct.toFixed(1)}%`;
+  el.timeBar.setAttribute('aria-valuenow', String(Math.round(pct)));
 }
 
 function computeResults(elapsedMs) {
-  const safeElapsedMs = Math.max(1, elapsedMs);
-  const elapsedMinutes = safeElapsedMs / 60_000;
-  const cpm = Math.round(roundNonSpace / elapsedMinutes);
-  const wpm = cpm / 5;
-  const accuracy = roundTyped === 0 ? 0 : (roundCorrect / roundTyped) * 100;
+  const minutes = Math.max(0.0001, elapsedMs / 60000);
+  const cpm = roundNonSpace / minutes;
+  const wpm = toWpmFromCpm(cpm);
+  const accuracy = roundTyped ? (roundCorrect / roundTyped) * 100 : 0;
   const score = wpm * (accuracy / 100);
   return { wpm, accuracy, score };
 }
@@ -494,65 +468,61 @@ function computeResults(elapsedMs) {
 function getSavedHighScore() {
   const raw = localStorage.getItem(LEARN_HIGHSCORE_KEY);
   const n = Number(raw);
-  if (Number.isFinite(n) && n >= 0) return n;
+  if (Number.isFinite(n)) return n;
 
-  // Migrate from legacy CPM-based stored value.
-  const legacyRaw = localStorage.getItem(LEARN_HIGHSCORE_KEY_V1);
-  const legacy = Number(legacyRaw);
-  if (!Number.isFinite(legacy) || legacy <= 0) return 0;
-  const migrated = toWpmFromCpm(legacy);
-  localStorage.setItem(LEARN_HIGHSCORE_KEY, String(migrated));
-  return migrated;
+  // Migrate legacy CPM-based key once.
+  const old = Number(localStorage.getItem(LEARN_HIGHSCORE_KEY_V1));
+  if (Number.isFinite(old) && old > 0) {
+    const migrated = toWpmFromCpm(old);
+    localStorage.setItem(LEARN_HIGHSCORE_KEY, String(migrated));
+    localStorage.removeItem(LEARN_HIGHSCORE_KEY_V1);
+    return migrated;
+  }
+
+  return 0;
 }
 
 function setHighScore(value) {
   localStorage.setItem(LEARN_HIGHSCORE_KEY, String(value));
 }
 
-function setLastRoundUi({ wpm, accuracy, score }) {
-  if (el.lastCpm) el.lastCpm.textContent = Number(wpm).toFixed(1);
-  if (el.lastAcc) el.lastAcc.textContent = `${accuracy.toFixed(1)}%`;
-  if (el.lastScore) el.lastScore.textContent = Number(score).toFixed(1);
+function setHighScoreUi(value) {
+  if (!el.highScore) return;
+  el.highScore.textContent = Number(value).toFixed(1);
 }
 
-function setHighScoreUi(value) {
-  if (el.highScore) el.highScore.textContent = value ? Number(value).toFixed(1) : '—';
+function setLastRoundUi(result) {
+  if (el.lastCpm) el.lastCpm.textContent = Number(result.wpm).toFixed(1);
+  if (el.lastAcc) el.lastAcc.textContent = `${Number(result.accuracy).toFixed(1)}%`;
+  if (el.lastScore) el.lastScore.textContent = Number(result.score).toFixed(1);
 }
 
 function saveLastResult(result) {
   try {
     localStorage.setItem(LEARN_LASTRESULT_KEY, JSON.stringify(result));
+    localStorage.removeItem(LEARN_LASTRESULT_KEY_V1);
   } catch {
-    // Ignore storage errors.
+    // Ignore.
   }
 }
 
 function loadLastResult() {
   try {
     const raw = localStorage.getItem(LEARN_LASTRESULT_KEY);
-    if (raw) {
-      const obj = JSON.parse(raw);
-      if (!obj || typeof obj !== 'object') return null;
-      const wpm = Number(obj.wpm);
-      const accuracy = Number(obj.accuracy);
-      const score = Number(obj.score);
-      if (!Number.isFinite(wpm) || !Number.isFinite(accuracy) || !Number.isFinite(score)) return null;
-      return { wpm, accuracy, score };
-    }
+    if (raw) return JSON.parse(raw);
 
-    // Migrate legacy CPM-based stored result.
-    const legacyRaw = localStorage.getItem(LEARN_LASTRESULT_KEY_V1);
-    if (!legacyRaw) return null;
-    const legacyObj = JSON.parse(legacyRaw);
-    if (!legacyObj || typeof legacyObj !== 'object') return null;
-    const legacyCpm = Number(legacyObj.cpm);
-    const accuracy = Number(legacyObj.accuracy);
-    const legacyScore = Number(legacyObj.score);
-    if (!Number.isFinite(legacyCpm) || !Number.isFinite(accuracy) || !Number.isFinite(legacyScore)) return null;
-    const wpm = toWpmFromCpm(legacyCpm);
-    const score = toWpmFromCpm(legacyScore);
-    const migrated = { wpm, accuracy, score };
+    // Migrate legacy CPM-based value once.
+    const oldRaw = localStorage.getItem(LEARN_LASTRESULT_KEY_V1);
+    if (!oldRaw) return null;
+    const old = JSON.parse(oldRaw);
+    if (!old || typeof old !== 'object') return null;
+    const migrated = {
+      wpm: toWpmFromCpm(old.wpm ?? old.cpm ?? 0),
+      accuracy: Number(old.accuracy ?? 0),
+      score: toWpmFromCpm(old.score ?? old.cpm ?? 0),
+    };
     localStorage.setItem(LEARN_LASTRESULT_KEY, JSON.stringify(migrated));
+    localStorage.removeItem(LEARN_LASTRESULT_KEY_V1);
     return migrated;
   } catch {
     return null;
@@ -819,6 +789,7 @@ function spreadSpanishForEnglish() {
     }
   }
 }
+
 function updateAlignmentForCurrentSentence(alignPayload) {
   if (!currentItem) return;
   if (alignPayload?.sp_id !== currentItem.sp_id) return;
@@ -946,46 +917,6 @@ function startSentence(item) {
   });
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-  const data = await res.json();
-  if (!res.ok) {
-    const msg = data?.error || `Request failed (${res.status})`;
-    throw new Error(msg);
-  }
-  return data;
-}
-
-async function ensureDatasetLoaded() {
-  if (Array.isArray(datasetItems) && datasetItems.length) return;
-  setMeta('Loading dataset…');
-  const res = await fetch('/static/trimmed_sentence_groups.jsonl', { headers: { 'Accept': 'text/plain' } });
-  if (!res.ok) throw new Error(`Failed to load dataset (${res.status})`);
-  const text = await res.text();
-  const items = [];
-  for (const line of text.split(/\r?\n/)) {
-    const s = line.trim();
-    if (!s) continue;
-    try {
-      const obj = JSON.parse(s);
-      if (!obj || typeof obj !== 'object') continue;
-      if (!Array.isArray(obj.es) || !Array.isArray(obj.en) || !Array.isArray(obj.groups)) continue;
-      items.push(obj);
-    } catch {
-      // Ignore bad lines.
-    }
-  }
-  datasetItems = items;
-  setMeta(items.length ? `Dataset loaded (${items.length})` : 'Dataset empty');
-}
-
-async function loadRandomSentence() {
-  await ensureDatasetLoaded();
-  if (!datasetItems || !datasetItems.length) throw new Error('Dataset is empty');
-  const idx = Math.floor(Math.random() * datasetItems.length);
-  startSentence(datasetItems[idx]);
-}
-
 function startNewRound() {
   stopTimer();
   timerRunning = false;
@@ -1003,6 +934,27 @@ function startNewRound() {
     inputEnabled = false;
     setStatus('Error');
   });
+}
+
+function startAttemptIfNeeded() {
+  if (timerRunning) return;
+  timerRunning = true;
+  startTs = nowMs();
+  setStatus('Running');
+
+  stopTimer();
+  timerInterval = setInterval(() => {
+    const elapsedMs = nowMs() - startTs;
+    updateTimerUi(elapsedMs);
+
+    if (elapsedMs >= totalDurationMs()) {
+      stopTimer();
+      timerRunning = false;
+      inputEnabled = false;
+      setStatus('Done');
+      showResults(elapsedMs);
+    }
+  }, 50);
 }
 
 function acceptChar(ch) {
@@ -1144,8 +1096,39 @@ el.resultsDialog.addEventListener('close', () => {
   }
 });
 
+async function ensureDatasetLoaded() {
+  if (Array.isArray(datasetItems) && datasetItems.length) return;
+  setMeta('Loading dataset…');
+  const res = await fetch('./trimmed_sentence_groups.jsonl', { headers: { 'Accept': 'text/plain' } });
+  if (!res.ok) throw new Error(`Failed to load dataset (${res.status})`);
+  const text = await res.text();
+  const items = [];
+  for (const line of text.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      const obj = JSON.parse(s);
+      if (!obj || typeof obj !== 'object') continue;
+      if (!Array.isArray(obj.es) || !Array.isArray(obj.en) || !Array.isArray(obj.groups)) continue;
+      items.push(obj);
+    } catch {
+      // Ignore bad lines.
+    }
+  }
+  datasetItems = items;
+  setMeta(items.length ? `Dataset loaded (${items.length})` : 'Dataset empty');
+}
+
+async function loadRandomSentence() {
+  await ensureDatasetLoaded();
+  if (!datasetItems || !datasetItems.length) throw new Error('Dataset is empty');
+  const idx = Math.floor(Math.random() * datasetItems.length);
+  startSentence(datasetItems[idx]);
+}
+
 window.addEventListener('load', async () => {
   initOnscreenKeyboard();
+
   setHighScoreUi(getSavedHighScore());
   const last = loadLastResult();
   if (last) setLastRoundUi(last);
