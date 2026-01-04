@@ -1,5 +1,6 @@
 Flask==3.0.3
 simalign==0.4
+awesome-align
 # Profanity filtering (Python 3.13-compatible)
 better-profanity
 

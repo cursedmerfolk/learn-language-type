@@ -40,6 +40,30 @@ let enUnderlineMask = null;
 let awaitingSpace = false;
 let pendingJump = null;
 
+// Virtual ENG-ESP keyboard: support dead-key accents using an ENG-US physical keyboard.
+// Dead keys here are triggered using convenient US keys:
+// - apostrophe (') => acute accent: á é í ó ú
+// - double quote (") => diaeresis: ü
+let deadKey = null; // 'acute' | 'diaeresis' | null
+
+const ACUTE_MAP = {
+  a: 'á',
+  e: 'é',
+  i: 'í',
+  o: 'ó',
+  u: 'ú',
+  A: 'Á',
+  E: 'É',
+  I: 'Í',
+  O: 'Ó',
+  U: 'Ú',
+};
+
+const DIAERESIS_MAP = {
+  u: 'ü',
+  U: 'Ü',
+};
+
 let durationSeconds = 60;
 let timerRunning = false;
 let startTs = null;
@@ -52,6 +76,7 @@ let sentencesCompleted = 0;
 
 let osk = null;
 let oskClearTimers = new Map();
+let oskShifted = false;
 
 let datasetItems = null;
 
@@ -104,6 +129,8 @@ function setActiveLang(next) {
   } else {
     el.englishTypingBox?.focus();
   }
+
+  applyOskLayoutForActiveLang();
 }
 
 function cleanTokenIdxList(list, maxExclusive) {
@@ -184,6 +211,36 @@ function activeTokenRange() {
   const r = ranges[tokenIdx];
   if (!r) return null;
   return { start: r.start, end: r.end };
+}
+
+function expectedCharAtActiveCursor() {
+  const isSp = activeLang === 'sp';
+  const text = isSp ? spText : enText;
+  const cursor = isSp ? spCursorIndex : enCursorIndex;
+  if (!text) return null;
+  if (!Number.isFinite(cursor)) return null;
+  if (cursor < 0 || cursor >= text.length) return null;
+  return text[cursor];
+}
+
+function mapUsKeyToVirtualEsChar(evKey, expectedChar) {
+  // Map common Spanish-only letters when using an ENG-US physical layout.
+  // Keep this conservative by only substituting when the expected char matches.
+  if (expectedChar === '¡' && evKey === '!') return '¡';
+  if (expectedChar === '¿' && evKey === '?') return '¿';
+
+  if (expectedChar === 'ñ' && evKey === ';') return 'ñ';
+  if (expectedChar === 'Ñ' && evKey === ':') return 'Ñ';
+
+  // Cedilla is not typable on US; allow using c/C when it's what's expected.
+  if (expectedChar === 'ç' && evKey === 'c') return 'ç';
+  if (expectedChar === 'Ç' && evKey === 'C') return 'Ç';
+
+  // Allow producing the standalone accent marks if they ever appear.
+  if (expectedChar === '´' && evKey === "'") return '´';
+  if (expectedChar === '¨' && evKey === '"') return '¨';
+
+  return evKey;
 }
 
 function computeTokenRanges(text) {
@@ -446,22 +503,7 @@ function initOnscreenKeyboard() {
     stopMouseDownPropagation: true,
     stopMouseUpPropagation: true,
     theme: 'hg-theme-default hg-layout-default',
-    layout: {
-      default: [
-        '1 2 3 4 5 6 7 8 9 0 \' ¡ {bksp}',
-        'q w e r t y u i o p ` + ç',
-        'a s d f g h j k l ñ ´ {enter}',
-        '{shift} z x c v b n m , . - {shift}',
-        '{space}',
-      ],
-      shift: [
-        '! @ # $ % ^ & ( ) = ? ¿ {bksp}',
-        'q w e r t y u i o p ^ * Ç',
-        'a s d f g h j k l ñ ¨ {enter}',
-        '{shift} z x c v b n m ; : _ {shift}',
-        '{space}',
-      ],
-    },
+    layout: OSK_LAYOUTS.es,
     display: {
       '{bksp}': '⌫',
       '{enter}': '⏎',
@@ -470,12 +512,59 @@ function initOnscreenKeyboard() {
     },
     layoutName: 'default',
   });
+
+  oskShifted = false;
+  applyOskLayoutForActiveLang();
 }
 
 function setOskLayoutName(name) {
+  oskShifted = name === 'shift';
+  applyOskLayoutForActiveLang();
+}
+
+const OSK_LAYOUTS = {
+  // Matches the Spanish layout we were already using.
+  es: {
+    default: [
+      '1 2 3 4 5 6 7 8 9 0 \' ¡ {bksp}',
+      'q w e r t y u i o p ` + ç',
+      'a s d f g h j k l ñ ´ {enter}',
+      '{shift} z x c v b n m , . - {shift}',
+      '{space}',
+    ],
+    shift: [
+      '! @ # $ % ^ & ( ) = ? ¿ {bksp}',
+      'q w e r t y u i o p ^ * Ç',
+      'a s d f g h j k l ñ ¨ {enter}',
+      '{shift} z x c v b n m ; : _ {shift}',
+      '{space}',
+    ],
+  },
+  // Standard US English QWERTY for visualization on the English row.
+  en: {
+    default: [
+      '1 2 3 4 5 6 7 8 9 0 - = {bksp}',
+      'q w e r t y u i o p [ ] \\',
+      'a s d f g h j k l ; \' {enter}',
+      '{shift} z x c v b n m , . / {shift}',
+      '{space}',
+    ],
+    shift: [
+      '! @ # $ % ^ & * ( ) _ + {bksp}',
+      'q w e r t y u i o p { } |',
+      'a s d f g h j k l : " {enter}',
+      '{shift} z x c v b n m < > ? {shift}',
+      '{space}',
+    ],
+  },
+};
+
+function applyOskLayoutForActiveLang() {
   if (!osk) return;
+  const lang = activeLang === 'sp' ? 'es' : 'en';
+  const name = oskShifted ? 'shift' : 'default';
   try {
-    osk.setOptions({ layoutName: name });
+    osk.setOptions({ layout: OSK_LAYOUTS[lang], layoutName: name });
   } catch {
     // Ignore.
   }
@@ -1006,6 +1095,7 @@ function startSentence(item) {
   currentItem = item;
   inputEnabled = true;
   hasTypedAny = false;
+  deadKey = null;
 
   const esTokens = Array.isArray(item?.es)
     ? item.es.map((x) => String(x))
@@ -1237,6 +1327,8 @@ function handleBackspace() {
   if (!currentItem) return;
   if (!inputEnabled) return;
 
+  deadKey = null;
+
   if (awaitingSpace) {
     awaitingSpace = false;
     pendingJump = null;
@@ -1290,7 +1382,55 @@ function handleTypingKeydown(ev) {
 
   // Show symbol row while Shift is held.
   if (ev.key === 'Shift') {
+    oskShifted = true;
     setOskLayoutName('shift');
+  }
+
+  // We run a virtual keyboard layer; don't let the browser handle input.
+  // (We still allow modifier combos like Ctrl/Cmd shortcuts to pass through.)
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+
+  const isSpanishRow = activeLang === 'sp';
+  const expectedChar = expectedCharAtActiveCursor();
+
+  // Only run ESP virtual keyboard behavior while typing on the Spanish row.
+  // On the English row, treat all keys literally.
+  if (!isSpanishRow && deadKey) deadKey = null;
+
+  if (isSpanishRow) {
+    // Dead-key handling (US apostrophe/quote act like Spanish accent keys).
+    if (deadKey) {
+      // Pressing space after the dead-key emits the marker itself.
+      if (ev.key === ' ') {
+        ev.preventDefault();
+        const marker = deadKey === 'acute' ? '´' : '¨';
+        deadKey = null;
+        acceptChar(marker);
+        return;
+      }
+
+      if (ev.key.length === 1) {
+        ev.preventDefault();
+        const combined = (deadKey === 'acute')
+          ? ACUTE_MAP[ev.key]
+          : (deadKey === 'diaeresis' ? DIAERESIS_MAP[ev.key] : null);
+        const marker = deadKey === 'acute' ? '´' : '¨';
+        deadKey = null;
+
+        if (combined) {
+          acceptChar(combined);
+          return;
+        }
+
+        // Not combinable: emit the marker then the typed key.
+        acceptChar(marker);
+        acceptChar(mapUsKeyToVirtualEsChar(ev.key, expectedChar));
+        return;
+      }
+
+      // Non-printable key cancels the dead-key.
+      deadKey = null;
+    }
   }
 
   if (ev.key === ' ') {
@@ -1310,9 +1450,27 @@ function handleTypingKeydown(ev) {
     return;
   }
 
+  if (isSpanishRow) {
+    // Start dead-key mode if apostrophe is pressed (acute accent), unless we are
+    // expecting a literal apostrophe or a standalone acute marker.
+    if (ev.key === "'" && expectedChar !== "'" && expectedChar !== '´') {
+      ev.preventDefault();
+      deadKey = 'acute';
+      return;
+    }
+
+    // Diaeresis dead-key (for ü), unless expecting a literal quote or standalone diaeresis.
+    if (ev.key === '"' && expectedChar !== '"' && expectedChar !== '¨') {
+      ev.preventDefault();
+      deadKey = 'diaeresis';
+      return;
+    }
+  }
+
   if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
     ev.preventDefault();
-    acceptChar(ev.key);
+    if (isSpanishRow) acceptChar(mapUsKeyToVirtualEsChar(ev.key, expectedChar));
+    else acceptChar(ev.key);
   }
 }
 
