@@ -64,6 +64,21 @@ const DIAERESIS_MAP = {
   U: 'Ü',
 };
 
+function isLetterChar(ch) {
+  return typeof ch === 'string' && ch.length === 1 && /[a-zA-Z]/.test(ch);
+}
+
+function shouldUppercaseFromModifiers(ev, ch) {
+  if (!isLetterChar(ch)) return ch === String(ch).toUpperCase();
+  try {
+    const shift = Boolean(ev.getModifierState && ev.getModifierState('Shift'));
+    const caps = Boolean(ev.getModifierState && ev.getModifierState('CapsLock'));
+    return shift !== caps;
+  } catch {
+    return ch === ch.toUpperCase();
+  }
+}
+
 let durationSeconds = 60;
 let timerRunning = false;
 let startTs = null;
@@ -227,7 +242,7 @@ function mapUsKeyToVirtualEsChar(evKey, expectedChar) {
   // Map common Spanish-only letters when using an ENG-US physical layout.
   // Keep this conservative by only substituting when the expected char matches.
   if (expectedChar === '¡' && evKey === '!') return '¡';
-  if (expectedChar === '¿' && evKey === '?') return '¿';
+  if (expectedChar === '¿' && (evKey === '?' || evKey === '+')) return '¿';
 
   if (expectedChar === 'ñ' && evKey === ';') return 'ñ';
   if (expectedChar === 'Ñ' && evKey === ':') return 'Ñ';
@@ -1411,9 +1426,13 @@ function handleTypingKeydown(ev) {
 
       if (ev.key.length === 1) {
         ev.preventDefault();
-        const combined = (deadKey === 'acute')
-          ? ACUTE_MAP[ev.key]
-          : (deadKey === 'diaeresis' ? DIAERESIS_MAP[ev.key] : null);
+        const wantUpper = shouldUppercaseFromModifiers(ev, ev.key);
+        const k = String(ev.key);
+        const lower = k.toLowerCase();
+        const combinedLower = (deadKey === 'acute')
+          ? ACUTE_MAP[lower]
+          : (deadKey === 'diaeresis' ? DIAERESIS_MAP[lower] : null);
+        const combined = combinedLower ? (wantUpper ? combinedLower.toUpperCase() : combinedLower) : null;
         const marker = deadKey === 'acute' ? '´' : '¨';
         deadKey = null;
 
