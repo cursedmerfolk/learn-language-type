@@ -289,6 +289,29 @@ dialog::backdrop {
   max-width: none;
 }
 
+.sentenceStage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.sentenceStack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.sentenceCompleteMark {
+  font-size: 26px;
+  font-weight: 650;
+  color: #111;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
 .learnEnglish {
   position: relative;
   text-align: center;

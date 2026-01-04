@@ -97,11 +97,14 @@ let datasetItems = null;
 
 const el = {
   sentenceMeta: document.getElementById('sentenceMeta'),
+  sentenceWrap: document.getElementById('sentenceWrap'),
+  sentenceStage: document.getElementById('sentenceStage'),
   englishTypingBox: document.getElementById('englishTypingBox'),
   typingBox: document.getElementById('typingBox'),
   timeLeft: document.getElementById('timeLeft'),
   status: document.getElementById('status'),
   newRoundBtn: document.getElementById('newRoundBtn'),
+  sentenceCompleteMark: document.getElementById('sentenceCompleteMark'),
   resultsDialog: document.getElementById('resultsDialog'),
   cpmValue: document.getElementById('cpmValue'),
   accuracyValue: document.getElementById('accuracyValue'),
@@ -134,7 +137,112 @@ function setMeta(text) {
 }
 
 function setStatus(text) {
-  el.status.textContent = text;
+  if (el.status) el.status.textContent = text;
+}
+
+function animePromise(params) {
+  return new Promise((resolve) => {
+    try {
+      if (!window.anime) return resolve();
+      window.anime({
+        ...params,
+        complete: () => {
+          try {
+            if (typeof params.complete === 'function') params.complete();
+          } finally {
+            resolve();
+          }
+        },
+      });
+    } catch {
+      resolve();
+    }
+  });
+}
+
+async function animateSentenceSwap(loadNextSentence) {
+  const stage = el.sentenceStage;
+  const targets = stage ? [stage] : [el.typingBox, el.englishTypingBox].filter(Boolean);
+  if (!targets.length) {
+    await loadNextSentence();
+    return;
+  }
+
+  const mark = el.sentenceCompleteMark;
+  const canAnimate = Boolean(window.anime);
+
+  inputEnabled = false;
+
+  if (mark) mark.style.opacity = '0';
+
+  if (canAnimate) {
+    // Fade the checkmark in as the scroll begins (prevents a visible “jump”
+    // where the mark appears before the stage starts moving).
+    if (mark && stage) {
+      await new Promise((resolve) => {
+        try {
+          const tl = window.anime.timeline({ complete: resolve });
+          tl.add(
+            {
+              targets: mark,
+              opacity: [0, 1],
+              duration: 90,
+              easing: 'linear',
+            },
+            0
+          );
+          tl.add(
+            {
+              targets,
+              opacity: [1, 0],
+              translateY: [0, -18],
+              duration: 180,
+              easing: 'easeInCubic',
+            },
+            0
+          );
+        } catch {
+          resolve();
+        }
+      });
+    } else {
+      await animePromise({
+        targets,
+        opacity: [1, 0],
+        translateY: [0, -18],
+        duration: 180,
+        easing: 'easeInCubic',
+      });
+    }
+  }
+
+  // Load the next sentence (this re-renders the typing boxes).
+  await loadNextSentence();
+
+  if (mark) mark.style.opacity = '0';
+
+  if (canAnimate) {
+    // Start slightly below and invisible, then slide up + fade in.
+    for (const t of targets) {
+      t.style.opacity = '0';
+      t.style.transform = 'translateY(18px)';
+    }
+
+    await animePromise({
+      targets,
+      opacity: [0, 1],
+      translateY: [18, 0],
+      duration: 220,
+      easing: 'easeOutCubic',
+    });
+
+    for (const t of targets) {
+      t.style.opacity = '';
+      t.style.transform = '';
+    }
+  }
+
+  inputEnabled = true;
 }
 
 function setActiveLang(next) {
@@ -1125,7 +1233,9 @@ function finishSentenceIfDone() {
 
   sentencesCompleted += 1;
   if (timerRunning) {
-    loadRandomSentence().catch((e) => {
+    animateSentenceSwap(async () => {
+      await loadRandomSentence();
+    }).catch((e) => {
       setMeta(String(e?.message || e));
     });
   }

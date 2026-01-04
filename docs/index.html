@@ -38,7 +38,7 @@
 
       <section class="row" aria-label="Status">
         <div class="muted">Time: <span id="timeLeft">60.0</span>s</div>
-        <div class="muted">Status: <span id="status">Waiting</span></div>
+        <span id="status" class="hidden" aria-hidden="true">Waiting</span>
         <div id="sentenceMeta" class="muted">Loading…</div>
       </section>
 
@@ -57,22 +57,27 @@
 
       <section class="learnCenter" aria-label="Translation and typing">
         <div id="sentenceWrap" class="sentenceWrap" aria-label="Current sentence">
-          <div
-            id="typingBox"
-            class="typingbox learnSpanish"
-            tabindex="0"
-            role="textbox"
-            aria-multiline="true"
-            aria-label="Type the Spanish sentence shown"
-          ></div>
-          <div
-            id="englishTypingBox"
-            class="typingbox learnEnglishTyping"
-            tabindex="0"
-            role="textbox"
-            aria-multiline="true"
-            aria-label="Type the English sentence shown"
-          ></div>
+          <div id="sentenceStage" class="sentenceStage">
+            <div class="sentenceStack">
+              <div
+                id="typingBox"
+                class="typingbox learnSpanish"
+                tabindex="0"
+                role="textbox"
+                aria-multiline="true"
+                aria-label="Type the Spanish sentence shown"
+              ></div>
+              <div
+                id="englishTypingBox"
+                class="typingbox learnEnglishTyping"
+                tabindex="0"
+                role="textbox"
+                aria-multiline="true"
+                aria-label="Type the English sentence shown"
+              ></div>
+            </div>
+            <div id="sentenceCompleteMark" class="sentenceCompleteMark" aria-hidden="true">✓</div>
+          </div>
 
           <div id="osk" class="osk" aria-hidden="true"></div>
         </div>
