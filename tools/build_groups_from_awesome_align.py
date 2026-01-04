@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,47 @@ def parse_data_line(line: str) -> tuple[list[str], list[str], str, str] | None:
     if not es or not en:
         return None
     return es, en, es_text, en_text
+
+
+_EN_PUNCT_TRANSLATION = str.maketrans(
+    {
+        "\u2018": "'",  # left single quote
+        "\u2019": "'",  # right single quote
+        "\u201C": '"',  # left double quote
+        "\u201D": '"',  # right double quote
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2026": "...",  # ellipsis
+    }
+)
+
+
+def normalize_english_token(token: str) -> str:
+    """Normalize a token intended for the English side.
+
+    Goal: make English tokens more ASCII-friendly without changing token
+    boundaries (so alignment indices still match). Example: Velázquez -> Velazquez.
+    """
+
+    if not token:
+        return token
+
+    # First normalize common punctuation to ASCII.
+    s = token.translate(_EN_PUNCT_TRANSLATION)
+
+    # Then strip combining marks (diacritics) via NFKD decomposition.
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+
+    # A couple of very common letterforms that don't decompose to ASCII.
+    # (Keep this minimal to avoid surprising transliterations.)
+    s = s.replace("ß", "ss")
+
+    return s or token
+
+
+def normalize_english_tokens(tokens: list[str]) -> list[str]:
+    return [normalize_english_token(t) for t in tokens]
 
 
 def _try_init_alt_profanity_check_predict_prob():
@@ -316,6 +358,11 @@ def main(argv: list[str] | None = None) -> int:
                         meta_iter = None
                 continue
             es_tokens, en_tokens, es_text, en_text = parsed
+
+            # Normalize special characters on the English side (e.g. Velázquez -> Velazquez)
+            # without altering token boundaries.
+            en_tokens = normalize_english_tokens(en_tokens)
+            en_text = " ".join(en_tokens)
 
             if len(es_text) > args.max_chars or len(en_text) > args.max_chars:
                 n_dropped_too_long += 1

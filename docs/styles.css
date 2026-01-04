@@ -256,9 +256,10 @@ dialog::backdrop {
 
 .learnInfoDialogBody {
   font-family: inherit;
-  font-size: 22px;
+  font-size: 18px;
   line-height: 1.25;
-  color: #111;
+  color: #555;
+  text-align: center;
 }
 
 .learnInfoBody {
@@ -273,7 +274,15 @@ dialog::backdrop {
 
 .learnInfoList {
   margin: 0;
-  padding-left: 18px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.learnInfoList li {
+  margin: 0;
 }
 
 .learnHighScoreLine {

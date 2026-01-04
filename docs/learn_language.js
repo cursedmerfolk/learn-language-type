@@ -79,15 +79,20 @@ function shouldUppercaseFromModifiers(ev, ch) {
   }
 }
 
-let durationSeconds = 60;
 let timerRunning = false;
 let startTs = null;
 let timerInterval = null;
 
-let roundCorrect = 0;
-let roundTyped = 0;
 let roundNonSpace = 0;
 let sentencesCompleted = 0;
+
+const ROUND_SENTENCE_COUNT = 4;
+const ROUND_TOTAL_CHARS_MIN = 200;
+const ROUND_TOTAL_CHARS_MAX = 400;
+const ROUND_PICK_ATTEMPTS = 2500;
+let roundItems = [];
+let roundItemIndex = 0;
+let roundTotalChars = 0;
 
 let osk = null;
 let oskClearTimers = new Map();
@@ -107,14 +112,11 @@ const el = {
   sentenceCompleteMark: document.getElementById('sentenceCompleteMark'),
   resultsDialog: document.getElementById('resultsDialog'),
   cpmValue: document.getElementById('cpmValue'),
-  accuracyValue: document.getElementById('accuracyValue'),
-  scoreValue: document.getElementById('scoreValue'),
+  timeValue: document.getElementById('timeValue'),
   sentencesValue: document.getElementById('sentencesValue'),
   dialogNew: document.getElementById('dialogNew'),
 
   lastCpm: document.getElementById('lastCpm'),
-  lastAcc: document.getElementById('lastAcc'),
-  lastScore: document.getElementById('lastScore'),
   highScore: document.getElementById('highScore'),
   highScoreBanner: document.getElementById('highScoreBanner'),
 
@@ -643,9 +645,15 @@ function initOnscreenKeyboard() {
   const KeyboardCtor = window.SimpleKeyboard?.default || window.SimpleKeyboard;
   if (!KeyboardCtor) return;
 
+  function applyOskShiftChar(ch) {
+    if (!oskShifted) return ch;
+    if (ch === 'ñ') return 'Ñ';
+    if (typeof ch === 'string' && ch.length === 1 && /[a-z]/.test(ch)) return ch.toUpperCase();
+    return ch;
+  }
+
   osk = new KeyboardCtor(el.osk, {
-    // Visualization only.
-    autoUseTouchEvents: false,
+    autoUseTouchEvents: true,
     preventMouseDownDefault: true,
     preventMouseUpDefault: true,
     stopMouseDownPropagation: true,
@@ -659,6 +667,70 @@ function initOnscreenKeyboard() {
       '{space}': 'space',
     },
     layoutName: 'default',
+    onKeyPress: (button) => {
+      // Keep typing focus behavior consistent when tapping OSK.
+      focusActiveTypingBoxFromUserGesture();
+
+      if (!currentItem) return;
+      if (!inputEnabled) return;
+
+      if (button === '{shift}') {
+        oskShifted = !oskShifted;
+        setOskLayoutName(oskShifted ? 'shift' : 'default');
+        return;
+      }
+
+      if (button === '{bksp}') {
+        handleBackspace();
+        return;
+      }
+
+      if (button === '{enter}') {
+        return;
+      }
+
+      if (button === '{space}') {
+        acceptChar(' ');
+        return;
+      }
+
+      if (typeof button !== 'string' || button.length !== 1) return;
+
+      const ch = applyOskShiftChar(button);
+
+      // Allow OSK taps to use the same Spanish dead-key accent behavior.
+      if (activeLang === 'sp') {
+        if (deadKey) {
+          const lower = ch.toLowerCase();
+          const combinedLower = (deadKey === 'acute')
+            ? ACUTE_MAP[lower]
+            : (deadKey === 'diaeresis' ? DIAERESIS_MAP[lower] : null);
+          const combined = combinedLower ? (oskShifted ? combinedLower.toUpperCase() : combinedLower) : null;
+          const marker = deadKey === 'acute' ? '´' : '¨';
+          deadKey = null;
+
+          if (combined) {
+            acceptChar(combined);
+            return;
+          }
+
+          acceptChar(marker);
+          acceptChar(ch);
+          return;
+        }
+
+        if (ch === '´') {
+          deadKey = 'acute';
+          return;
+        }
+        if (ch === '¨') {
+          deadKey = 'diaeresis';
+          return;
+        }
+      }
+
+      acceptChar(ch);
+    },
   });
 
   oskShifted = false;
@@ -756,11 +828,7 @@ function nowMs() {
 }
 
 function resetTimerUi() {
-  el.timeLeft.textContent = `${durationSeconds.toFixed(1)}`;
-}
-
-function totalDurationMs() {
-  return durationSeconds * 1000;
+  el.timeLeft.textContent = '0.0';
 }
 
 function stopTimer() {
@@ -771,17 +839,15 @@ function stopTimer() {
 }
 
 function updateTimerUi(elapsedMs) {
-  const leftMs = Math.max(0, totalDurationMs() - elapsedMs);
-  el.timeLeft.textContent = `${(leftMs / 1000).toFixed(1)}`;
+  el.timeLeft.textContent = `${Math.max(0, elapsedMs / 1000).toFixed(1)}`;
 }
 
 function computeResults(elapsedMs) {
   const minutes = Math.max(0.0001, elapsedMs / 60000);
   const cpm = roundNonSpace / minutes;
   const wpm = toWpmFromCpm(cpm);
-  const accuracy = roundTyped ? (roundCorrect / roundTyped) * 100 : 0;
-  const score = wpm * (accuracy / 100);
-  return { wpm, accuracy, score };
+  const seconds = Math.max(0, elapsedMs / 1000);
+  return { wpm, seconds };
 }
 
 function getSavedHighScore() {
@@ -811,9 +877,7 @@ function setHighScoreUi(value) {
 }
 
 function setLastRoundUi(result) {
-  if (el.lastCpm) el.lastCpm.textContent = Number(result.wpm).toFixed(1);
-  if (el.lastAcc) el.lastAcc.textContent = `${Number(result.accuracy).toFixed(1)}%`;
-  if (el.lastScore) el.lastScore.textContent = Number(result.score).toFixed(1);
+  if (el.lastCpm) el.lastCpm.textContent = Number(result?.wpm ?? 0).toFixed(1);
 }
 
 function saveLastResult(result) {
@@ -837,8 +901,7 @@ function loadLastResult() {
     if (!old || typeof old !== 'object') return null;
     const migrated = {
       wpm: toWpmFromCpm(old.wpm ?? old.cpm ?? 0),
-      accuracy: Number(old.accuracy ?? 0),
-      score: toWpmFromCpm(old.score ?? old.cpm ?? 0),
+      seconds: Number(old.seconds ?? 0),
     };
     localStorage.setItem(LEARN_LASTRESULT_KEY, JSON.stringify(migrated));
     localStorage.removeItem(LEARN_LASTRESULT_KEY_V1);
@@ -851,20 +914,19 @@ function loadLastResult() {
 function showResults(elapsedMs) {
   const r = computeResults(elapsedMs);
   el.cpmValue.textContent = Number(r.wpm).toFixed(1);
-  el.accuracyValue.textContent = `${r.accuracy.toFixed(1)}%`;
-  if (el.scoreValue) el.scoreValue.textContent = Number(r.score).toFixed(1);
+  if (el.timeValue) el.timeValue.textContent = `${Number(r.seconds).toFixed(1)}s`;
   el.sentencesValue.textContent = String(sentencesCompleted);
 
   setLastRoundUi(r);
   saveLastResult(r);
 
   const prevHigh = getSavedHighScore();
-  const nextHigh = Math.max(prevHigh, r.score);
+  const nextHigh = Math.max(prevHigh, r.wpm);
   if (nextHigh !== prevHigh) setHighScore(nextHigh);
   setHighScoreUi(nextHigh);
 
   if (el.highScoreBanner) {
-    const beat = r.score > prevHigh;
+    const beat = r.wpm > prevHigh;
     el.highScoreBanner.classList.toggle('hidden', !beat);
   }
 
@@ -1157,8 +1219,26 @@ function advanceIfNeeded() {
     let cursor = isSp ? spCursorIndex : enCursorIndex;
     if (cursor < r.start) cursor = r.start;
 
-    // Token complete -> require a space before jumping to next token or flipping/advancing.
+    // Token complete -> require correctness BEFORE allowing space-to-advance.
     if (cursor >= r.end) {
+      const text = isSp ? spText : enText;
+      const buf = isSp ? spTypedBuffer : enTypedBuffer;
+      let ok = true;
+      const end = Math.max(0, Math.min(text.length, r.end));
+      for (let i = r.start; i < end; i += 1) {
+        if (buf[i] === undefined || buf[i] !== text[i]) {
+          ok = false;
+          break;
+        }
+      }
+
+      if (!ok) {
+        if (isSp) spCursorIndex = cursor;
+        else enCursorIndex = cursor;
+        setCurrentStep(stepIndex);
+        return;
+      }
+
       const jump = {};
 
       if (activeTokenPos + 1 < list.length) {
@@ -1232,13 +1312,24 @@ function finishSentenceIfDone() {
   if (stepIndex < stepPlan.length) return;
 
   sentencesCompleted += 1;
-  if (timerRunning) {
-    animateSentenceSwap(async () => {
-      await loadRandomSentence();
-    }).catch((e) => {
-      setMeta(String(e?.message || e));
-    });
+
+  if (sentencesCompleted >= ROUND_SENTENCE_COUNT) {
+    stopTimer();
+    timerRunning = false;
+    inputEnabled = false;
+    setStatus('Done');
+    const elapsedMs = startTs ? (nowMs() - startTs) : 0;
+    showResults(elapsedMs);
+    return;
   }
+
+  inputEnabled = false;
+  roundItemIndex = Math.min(roundItems.length, roundItemIndex + 1);
+  animateSentenceSwap(async () => {
+    await loadRoundSentenceAt(roundItemIndex);
+  }).catch((e) => {
+    setMeta(String(e?.message || e));
+  });
 }
 
 function startSentence(item) {
@@ -1299,7 +1390,11 @@ function startSentence(item) {
   // Derive an alignment-like mapping for spacing adjustments.
   currentItem.align = buildAlignFromGroups(item.groups || [], spTokenRanges.length, enTokenRanges.length);
 
-  setMeta('');
+  if (roundItems.length && Number.isFinite(roundItemIndex)) {
+    setMeta(`Sentence ${Math.min(ROUND_SENTENCE_COUNT, roundItemIndex + 1)} of ${ROUND_SENTENCE_COUNT} · ${roundTotalChars} chars`);
+  } else {
+    setMeta('');
+  }
 
   advanceIfNeeded();
   updateRenderFromBuffers();
@@ -1326,9 +1421,7 @@ function acceptSpaceToAdvance() {
     // the keypress but don't write past bounds.
   }
 
-  roundTyped += 1;
   const expected = cursor < text.length ? text[cursor] : ' ';
-  if (expected === ' ') roundCorrect += 1;
 
   if (cursor < text.length) buf[cursor] = ' ';
   cursor += 1;
@@ -1378,14 +1471,16 @@ function startNewRound() {
   timerRunning = false;
   startTs = null;
   hasTypedAny = false;
-  roundCorrect = 0;
-  roundTyped = 0;
   roundNonSpace = 0;
   sentencesCompleted = 0;
+  roundItems = [];
+  roundItemIndex = 0;
+  roundTotalChars = 0;
   resetTimerUi();
   setStatus('Waiting');
   inputEnabled = true;
-  loadRandomSentence().catch((e) => {
+
+  startRound().catch((e) => {
     setMeta(String(e?.message || e));
     inputEnabled = false;
     setStatus('Error');
@@ -1402,14 +1497,6 @@ function startAttemptIfNeeded() {
   timerInterval = setInterval(() => {
     const elapsedMs = nowMs() - startTs;
     updateTimerUi(elapsedMs);
-
-    if (elapsedMs >= totalDurationMs()) {
-      stopTimer();
-      timerRunning = false;
-      inputEnabled = false;
-      setStatus('Done');
-      showResults(elapsedMs);
-    }
   }, 50);
 }
 
@@ -1456,9 +1543,7 @@ function acceptChar(ch) {
   const expected = text[cursor];
   // Only allow space when we're specifically awaiting it to advance.
   if (ch === ' ') return;
-  roundTyped += 1;
-  if (ch === expected) roundCorrect += 1;
-  if (!/\s/.test(ch)) roundNonSpace += 1;
+  if (ch === expected && !/\s/.test(ch)) roundNonSpace += 1;
 
   if (isSp) {
     spTypedBuffer[cursor] = ch;
@@ -1710,6 +1795,78 @@ async function loadRandomSentence() {
   if (!datasetItems || !datasetItems.length) throw new Error('Dataset is empty');
   const idx = Math.floor(Math.random() * datasetItems.length);
   startSentence(datasetItems[idx]);
+}
+
+function itemCharCount(item) {
+  const esTokens = Array.isArray(item?.es)
+    ? item.es.map((x) => String(x))
+    : String(item?.spanish || '').split(/\s+/).filter(Boolean);
+  const enTokens = Array.isArray(item?.en)
+    ? item.en.map((x) => String(x))
+    : String(item?.english || '').split(/\s+/).filter(Boolean);
+  return esTokens.join(' ').length + enTokens.join(' ').length;
+}
+
+function pickRoundFromDataset(items) {
+  const n = Array.isArray(items) ? items.length : 0;
+  if (n <= ROUND_SENTENCE_COUNT) {
+    const picked = (items || []).slice(0, ROUND_SENTENCE_COUNT);
+    const total = picked.reduce((acc, it) => acc + itemCharCount(it), 0);
+    return { items: picked, totalChars: total };
+  }
+
+  let best = null;
+  let bestDist = Infinity;
+  let bestTotal = 0;
+  const target = Math.round((ROUND_TOTAL_CHARS_MIN + ROUND_TOTAL_CHARS_MAX) / 2);
+
+  for (let attempt = 0; attempt < ROUND_PICK_ATTEMPTS; attempt += 1) {
+    const chosenIdxs = new Set();
+    const picked = [];
+    while (picked.length < ROUND_SENTENCE_COUNT && chosenIdxs.size < n) {
+      const idx = Math.floor(Math.random() * n);
+      if (chosenIdxs.has(idx)) continue;
+      chosenIdxs.add(idx);
+      picked.push(items[idx]);
+    }
+    if (picked.length !== ROUND_SENTENCE_COUNT) continue;
+
+    const total = picked.reduce((acc, it) => acc + itemCharCount(it), 0);
+    if (total >= ROUND_TOTAL_CHARS_MIN && total <= ROUND_TOTAL_CHARS_MAX) {
+      return { items: picked, totalChars: total };
+    }
+
+    const dist = total < ROUND_TOTAL_CHARS_MIN
+      ? (ROUND_TOTAL_CHARS_MIN - total)
+      : (total > ROUND_TOTAL_CHARS_MAX ? (total - ROUND_TOTAL_CHARS_MAX) : 0);
+    const tie = Math.abs(total - target);
+    const score = dist * 1000 + tie;
+    if (score < bestDist) {
+      bestDist = score;
+      best = picked;
+      bestTotal = total;
+    }
+  }
+
+  const fallback = best || items.slice(0, ROUND_SENTENCE_COUNT);
+  return { items: fallback, totalChars: best ? bestTotal : fallback.reduce((acc, it) => acc + itemCharCount(it), 0) };
+}
+
+async function loadRoundSentenceAt(idx) {
+  if (!Array.isArray(roundItems) || !roundItems.length) throw new Error('Round is empty');
+  const i = Math.max(0, Math.min(roundItems.length - 1, Number(idx) || 0));
+  roundItemIndex = i;
+  startSentence(roundItems[i]);
+}
+
+async function startRound() {
+  await ensureDatasetLoaded();
+  if (!datasetItems || !datasetItems.length) throw new Error('Dataset is empty');
+  const picked = pickRoundFromDataset(datasetItems);
+  roundItems = picked.items;
+  roundTotalChars = picked.totalChars;
+  roundItemIndex = 0;
+  await loadRoundSentenceAt(0);
 }
 
 window.addEventListener('load', async () => {

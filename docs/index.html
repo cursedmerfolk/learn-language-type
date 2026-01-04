@@ -24,7 +24,7 @@
       </h1>
 
       <div class="learnHeaderActions" aria-label="Actions">
-        <button id="newRoundBtn" class="btn" type="button">New round</button>
+        <button id="newRoundBtn" class="btn" type="button">Start over</button>
       </div>
 
       <dialog id="learnInfoDialog" class="dialog learnInfoDialog" aria-label="About Learn Language">
@@ -37,7 +37,7 @@
       </dialog>
 
       <section class="row" aria-label="Status">
-        <div class="muted">Time: <span id="timeLeft">60.0</span>s</div>
+        <div class="muted">Time: <span id="timeLeft">0.0</span>s</div>
         <span id="status" class="hidden" aria-hidden="true">Waiting</span>
         <div id="sentenceMeta" class="muted">Loading…</div>
       </section>
@@ -45,13 +45,11 @@
       <section class="learnScores" aria-label="Scores">
         <div class="muted learnLastRound">
           Last round:
-          <span id="lastCpm" class="value">—</span> wpm ·
-          <span id="lastAcc" class="value">—</span> ·
-          <span id="lastScore" class="value">—</span> modified wpm
+          <span id="lastCpm" class="value">—</span> wpm
         </div>
         <div class="muted learnHighScoreLine">
           High score:
-          <span id="highScore" class="value">—</span> modified wpm
+          <span id="highScore" class="value">—</span> wpm
         </div>
       </section>
 
@@ -85,20 +83,18 @@
 
       <dialog id="resultsDialog">
         <form method="dialog" class="dialog">
-          <h2>Results</h2>
+          <h2>Round complete</h2>
           <div id="highScoreBanner" class="muted hidden" aria-live="polite">High Score!</div>
           <div class="dialogGrid">
             <div class="muted">Words/minute</div>
             <div id="cpmValue" class="value">—</div>
-            <div class="muted">Accuracy</div>
-            <div id="accuracyValue" class="value">—</div>
-            <div class="muted">Modified wpm</div>
-            <div id="scoreValue" class="value">—</div>
+            <div class="muted">Time</div>
+            <div id="timeValue" class="value">—</div>
             <div class="muted">Sentences completed</div>
             <div id="sentencesValue" class="value">—</div>
           </div>
           <div class="row dialogActions">
-            <button id="dialogNew" class="btn" value="new">New round</button>
+            <button id="dialogNew" class="btn" value="new">Start over</button>
           </div>
         </form>
       </dialog>
