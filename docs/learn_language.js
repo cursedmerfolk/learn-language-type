@@ -109,11 +109,13 @@ const el = {
   timeLeft: document.getElementById('timeLeft'),
   status: document.getElementById('status'),
   newRoundBtn: document.getElementById('newRoundBtn'),
+  debugEndRoundBtn: document.getElementById('debugEndRoundBtn'),
   sentenceCompleteMark: document.getElementById('sentenceCompleteMark'),
   resultsDialog: document.getElementById('resultsDialog'),
   cpmValue: document.getElementById('cpmValue'),
   timeValue: document.getElementById('timeValue'),
-  sentencesValue: document.getElementById('sentencesValue'),
+  roundChecks: document.getElementById('roundChecks'),
+  roundChecksHint: document.getElementById('roundChecksHint'),
   dialogNew: document.getElementById('dialogNew'),
 
   lastCpm: document.getElementById('lastCpm'),
@@ -127,6 +129,9 @@ const LEARN_HIGHSCORE_KEY_V1 = 'code_typing_learn_highscore_v1';
 const LEARN_LASTRESULT_KEY_V1 = 'code_typing_learn_last_result_v1';
 const LEARN_HIGHSCORE_KEY = 'code_typing_learn_highscore_wpm_v1';
 const LEARN_LASTRESULT_KEY = 'code_typing_learn_last_result_wpm_v1';
+
+const LEARN_ROUND_CHECKS_KEY = 'code_typing_learn_round_checks_v1';
+const LEARN_ROUND_CHECKS_MAX = 7;
 
 function toWpmFromCpm(cpm) {
   const n = Number(cpm);
@@ -911,11 +916,144 @@ function loadLastResult() {
   }
 }
 
+function getRoundChecksCount() {
+  const raw = localStorage.getItem(LEARN_ROUND_CHECKS_KEY);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(LEARN_ROUND_CHECKS_MAX, Math.trunc(n)));
+}
+
+function setRoundChecksCount(value) {
+  const v = Math.max(0, Math.min(LEARN_ROUND_CHECKS_MAX, Math.trunc(Number(value) || 0)));
+  localStorage.setItem(LEARN_ROUND_CHECKS_KEY, String(v));
+  return v;
+}
+
+function renderRoundChecks(count) {
+  const wrap = el.roundChecks;
+  if (!wrap) return;
+  const boxes = Array.from(wrap.querySelectorAll('.roundCheckBox'));
+  for (let i = 0; i < boxes.length; i += 1) {
+    const box = boxes[i];
+    if (!box) continue;
+    box.textContent = '';
+    if (i < count) {
+      const mark = document.createElement('span');
+      mark.className = 'roundCheckMark';
+      mark.textContent = '✓';
+      box.appendChild(mark);
+    }
+  }
+}
+
+function setRoundChecksHintVisible(visible) {
+  if (!el.roundChecksHint) return;
+  el.roundChecksHint.classList.toggle('hidden', !visible);
+}
+
+function updateRoundChecksHintFromCount(count) {
+  // Only show the hint when 6 boxes are filled but not the 7th.
+  setRoundChecksHintVisible(Number(count) === (LEARN_ROUND_CHECKS_MAX - 1));
+}
+
+async function animateAddNextRoundCheckmark(opts) {
+  const wrap = el.roundChecks;
+  if (!wrap) return;
+
+  const wpm = Number(opts?.wpm);
+  const prevHighScore = Number(opts?.prevHighScore);
+
+  const prev = getRoundChecksCount();
+  if (prev >= LEARN_ROUND_CHECKS_MAX) {
+    renderRoundChecks(prev);
+    updateRoundChecksHintFromCount(prev);
+    return;
+  }
+
+  // Special rule: to fill the 7th box, player must beat their previous WPM high score.
+  if (prev === (LEARN_ROUND_CHECKS_MAX - 1)) {
+    const canFill = Number.isFinite(wpm) && Number.isFinite(prevHighScore) && wpm > prevHighScore;
+    if (!canFill) {
+      renderRoundChecks(prev);
+      updateRoundChecksHintFromCount(prev);
+      return;
+    }
+  }
+
+  const next = setRoundChecksCount(prev + 1);
+  renderRoundChecks(next);
+  updateRoundChecksHintFromCount(next);
+
+  const boxes = Array.from(wrap.querySelectorAll('.roundCheckBox'));
+  const targetBox = boxes[next - 1];
+  const mark = targetBox ? targetBox.querySelector('.roundCheckMark') : null;
+  if (!mark || !window.anime) return;
+
+  try {
+    window.anime.remove(mark);
+    mark.style.opacity = '0';
+    mark.style.transform = 'translateY(10px) scale(1)';
+
+    await new Promise((resolve) => {
+      try {
+        const tl = window.anime.timeline({ complete: resolve });
+        tl.add({
+          targets: mark,
+          opacity: [0, 1],
+          translateY: [10, 0],
+          duration: 170,
+          easing: 'easeOutCubic',
+        });
+        tl.add({
+          targets: mark,
+          scale: [1, 1.5],
+          duration: 90,
+          easing: 'easeOutCubic',
+        });
+        tl.add({
+          targets: mark,
+          scale: [1.5, 1],
+          duration: 80,
+          easing: 'easeInCubic',
+        });
+      } catch {
+        resolve();
+      }
+    });
+
+    mark.style.opacity = '';
+    mark.style.transform = '';
+  } catch {
+    // ignore
+  }
+}
+
+function debugEndRoundNow() {
+  // If results are already visible, don't double-trigger.
+  if (el.resultsDialog?.open) return;
+
+  // Debug behavior: reset the 7-box progress so it's easy to verify the animation.
+//   try {
+//     setRoundChecksCount(0);
+//     renderRoundChecks(0);
+//     updateRoundChecksHintFromCount(0);
+//   } catch {
+//     // ignore
+//   }
+
+  stopTimer();
+  timerRunning = false;
+  inputEnabled = false;
+  setStatus('Done');
+
+  const elapsedMs = startTs ? (nowMs() - startTs) : 0;
+  showResults(elapsedMs);
+}
+
 function showResults(elapsedMs) {
   const r = computeResults(elapsedMs);
   el.cpmValue.textContent = Number(r.wpm).toFixed(1);
   if (el.timeValue) el.timeValue.textContent = `${Number(r.seconds).toFixed(1)}s`;
-  el.sentencesValue.textContent = String(sentencesCompleted);
 
   setLastRoundUi(r);
   saveLastResult(r);
@@ -931,6 +1069,17 @@ function showResults(elapsedMs) {
   }
 
   el.resultsDialog.showModal();
+
+  // After completing a round, fill the next progress box with an animated check.
+  // If all 7 are already filled, do nothing.
+  // Defer until after the dialog's slide-in animation so the mark's translateY
+  // doesn't get visually swallowed by the dialog motion.
+  const delayMs = window.anime ? 240 : 0;
+  setTimeout(() => {
+    requestAnimationFrame(() => {
+      animateAddNextRoundCheckmark({ wpm: r.wpm, prevHighScore: prevHigh });
+    });
+  }, delayMs);
 }
 
 function buildSpansForReference(referenceText, containerEl) {
@@ -1760,6 +1909,12 @@ el.newRoundBtn.addEventListener('click', () => {
   startNewRound();
 });
 
+if (el.debugEndRoundBtn) {
+  el.debugEndRoundBtn.addEventListener('click', () => {
+    debugEndRoundNow();
+  });
+}
+
 el.resultsDialog.addEventListener('close', () => {
   const action = el.resultsDialog.returnValue;
   if (action === 'new') {
@@ -1875,6 +2030,10 @@ window.addEventListener('load', async () => {
   setHighScoreUi(getSavedHighScore());
   const last = loadLastResult();
   if (last) setLastRoundUi(last);
+
+  const c = getRoundChecksCount();
+  renderRoundChecks(c);
+  updateRoundChecksHintFromCount(c);
 
   startNewRound();
 });

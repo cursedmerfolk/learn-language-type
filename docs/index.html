@@ -24,7 +24,8 @@
       </h1>
 
       <div class="learnHeaderActions" aria-label="Actions">
-        <button id="newRoundBtn" class="btn" type="button">Start over</button>
+        <button id="newRoundBtn" class="btn" type="button">New Round</button>
+        <button id="debugEndRoundBtn" class="btn" type="button">Debug: end round</button>
       </div>
 
       <dialog id="learnInfoDialog" class="dialog learnInfoDialog" aria-label="About Learn Language">
@@ -83,16 +84,25 @@
 
       <dialog id="resultsDialog">
         <form method="dialog" class="dialog">
-          <h2>Round complete</h2>
+          <h2>Round complete!</h2>
           <div id="highScoreBanner" class="muted hidden" aria-live="polite">High Score!</div>
           <div class="dialogGrid">
             <div class="muted">Words/minute</div>
             <div id="cpmValue" class="value">—</div>
             <div class="muted">Time</div>
             <div id="timeValue" class="value">—</div>
-            <div class="muted">Sentences completed</div>
-            <div id="sentencesValue" class="value">—</div>
+            <div class="muted">Daily Progress</div>
+            <div id="roundChecks" class="roundChecks" aria-label="Round progress">
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+            </div>
           </div>
+          <div id="roundChecksHint" class="muted roundChecksHint hidden">Beat your previous WPM to fill box 7</div>
           <div class="row dialogActions">
             <button id="dialogNew" class="btn" value="new">Start over</button>
           </div>

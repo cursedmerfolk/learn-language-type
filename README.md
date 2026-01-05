@@ -25,3 +25,9 @@ TODOS:
    - Try feeding sp_en.txt to llm for word groups
    - have it filter out negative phrases
    - I tried this -> the group mappings produced were incorrect.
+
+
+FUTURE:
+ - ability to select vocabulary / complexity level.
+ - higher quality sentences with more accuirate group-mapping.
+ - other languages.

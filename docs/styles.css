@@ -151,6 +151,14 @@ dialog::backdrop {
   background: rgba(0, 0, 0, 0.25);
 }
 
+#resultsDialog {
+  border-radius: 12px;
+}
+
+#resultsDialog h2 {
+  text-align: center;
+}
+
 .dialog {
   min-width: 280px;
   padding: 6px 4px 2px;
@@ -161,6 +169,36 @@ dialog::backdrop {
   grid-template-columns: 1fr auto;
   gap: 8px 16px;
   margin: 12px 0 10px;
+}
+
+.roundChecks {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.roundCheckBox {
+  width: 18px;
+  height: 18px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  color: #111;
+}
+
+.roundCheckBox .roundCheckMark {
+  display: inline-block;
+  font-size: 14px;
+  transform-origin: 50% 50%;
+}
+
+.roundChecksHint {
+  text-align: center;
+  margin-top: 6px;
 }
 
 .value {
