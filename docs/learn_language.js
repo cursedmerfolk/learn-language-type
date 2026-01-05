@@ -131,6 +131,7 @@ const LEARN_HIGHSCORE_KEY = 'code_typing_learn_highscore_wpm_v1';
 const LEARN_LASTRESULT_KEY = 'code_typing_learn_last_result_wpm_v1';
 
 const LEARN_ROUND_CHECKS_KEY = 'code_typing_learn_round_checks_v1';
+const LEARN_ROUND_CHECKS_DAY_KEY = 'code_typing_learn_round_checks_day_v1';
 const LEARN_ROUND_CHECKS_MAX = 7;
 
 function toWpmFromCpm(cpm) {
@@ -929,6 +930,41 @@ function setRoundChecksCount(value) {
   return v;
 }
 
+function getLocalDayKey(d = new Date()) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getRoundChecksDayKey() {
+  return localStorage.getItem(LEARN_ROUND_CHECKS_DAY_KEY);
+}
+
+function setRoundChecksDayKey(dayKey) {
+  if (!dayKey) return;
+  localStorage.setItem(LEARN_ROUND_CHECKS_DAY_KEY, String(dayKey));
+}
+
+function ensureRoundChecksSameDayOrReset() {
+  const today = getLocalDayKey();
+  const saved = getRoundChecksDayKey();
+
+  // If we've never stored a day-key before, keep existing progress (migration-safe)
+  // and just stamp it as "today".
+  if (!saved) {
+    setRoundChecksDayKey(today);
+    return;
+  }
+
+  if (saved !== today) {
+    setRoundChecksCount(0);
+    renderRoundChecks(0);
+    updateRoundChecksHintFromCount(0);
+    setRoundChecksDayKey(today);
+  }
+}
+
 function renderRoundChecks(count) {
   const wrap = el.roundChecks;
   if (!wrap) return;
@@ -1051,6 +1087,10 @@ function debugEndRoundNow() {
 }
 
 function showResults(elapsedMs) {
+  // Daily progress resets automatically when a new day starts (local time).
+  // This is checked here too so it works even if the tab stays open overnight.
+  ensureRoundChecksSameDayOrReset();
+
   const r = computeResults(elapsedMs);
   el.cpmValue.textContent = Number(r.wpm).toFixed(1);
   if (el.timeValue) el.timeValue.textContent = `${Number(r.seconds).toFixed(1)}s`;
@@ -2031,6 +2071,7 @@ window.addEventListener('load', async () => {
   const last = loadLastResult();
   if (last) setLastRoundUi(last);
 
+  ensureRoundChecksSameDayOrReset();
   const c = getRoundChecksCount();
   renderRoundChecks(c);
   updateRoundChecksHintFromCount(c);
