@@ -61,6 +61,16 @@ h1 {
   color: #111;
 }
 
+/* On-screen keyboard: show which key(s) to press next. */
+.hg-button.hg-hintKey {
+  border-color: #111;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.hg-button.hg-hintMod {
+  border-color: #111;
+}
+
 .ch.group {
   background: rgba(0, 0, 0, 0.06);
 }

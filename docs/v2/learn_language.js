@@ -98,6 +98,7 @@ let roundTotalChars = 0;
 let osk = null;
 let oskClearTimers = new Map();
 let oskShifted = false;
+let oskHintButtons = [];
 
 let datasetItems = null;
 
@@ -263,6 +264,131 @@ function setActiveLang(next) {
   }
 
   applyOskLayoutForActiveLang();
+  updateOskHintFromState();
+}
+
+function splitKeyboardRow(row) {
+  return String(row || '').trim().split(/\s+/).filter(Boolean);
+}
+
+function buildOskShiftMaps(layout) {
+  const def = Array.isArray(layout?.default) ? layout.default : [];
+  const sh = Array.isArray(layout?.shift) ? layout.shift : [];
+
+  const defaultKeys = new Set();
+  const shiftedToBase = {};
+
+  for (let r = 0; r < Math.min(def.length, sh.length); r += 1) {
+    const a = splitKeyboardRow(def[r]);
+    const b = splitKeyboardRow(sh[r]);
+    const m = Math.min(a.length, b.length);
+    for (let i = 0; i < m; i += 1) {
+      const base = a[i];
+      const shifted = b[i];
+      if (!base || !shifted) continue;
+      if (base.startsWith('{') || shifted.startsWith('{')) continue;
+      defaultKeys.add(base);
+      // If duplicates occur, keep the first mapping (stable).
+      if (shiftedToBase[shifted] === undefined) shiftedToBase[shifted] = base;
+    }
+  }
+
+  return { defaultKeys, shiftedToBase };
+}
+
+let OSK_SHIFT_MAPS = null;
+
+function getOskShiftMaps(lang) {
+  // Lazily initialize after OSK_LAYOUTS exists.
+  if (!OSK_SHIFT_MAPS) {
+    OSK_SHIFT_MAPS = {
+      es: buildOskShiftMaps(OSK_LAYOUTS.es),
+      en: buildOskShiftMaps(OSK_LAYOUTS.en),
+    };
+  }
+  return OSK_SHIFT_MAPS[lang] || OSK_SHIFT_MAPS.es;
+}
+
+function oskHintButtonsForChar(ch, lang) {
+  if (ch === null || ch === undefined) return [];
+  const c = String(ch);
+  if (!c) return [];
+  if (c === ' ') return ['{space}'];
+
+  const maps = getOskShiftMaps(lang);
+
+  // Spanish dead-key hints: show the key combo that would *produce* the character.
+  // If a deadKey is already active, only hint the follow-up letter.
+  const lower = c.toLowerCase();
+  const isUpper = c !== lower;
+
+  const acuteBase = {
+    á: 'a',
+    é: 'e',
+    í: 'i',
+    ó: 'o',
+    ú: 'u',
+  };
+  const diaBase = { ü: 'u' };
+
+  if (lang === 'es') {
+    if (acuteBase[lower]) {
+      const letter = acuteBase[lower];
+      const letterButtons = isUpper ? ['{shift}', letter] : [letter];
+      if (deadKey) return letterButtons;
+      return ['´', ...letterButtons];
+    }
+    if (diaBase[lower]) {
+      const letter = diaBase[lower];
+      const letterButtons = isUpper ? ['{shift}', letter] : [letter];
+      if (deadKey) return letterButtons;
+      // Diaeresis marker is the shifted variant of ´ (¨).
+      return ['{shift}', '´', ...letterButtons];
+    }
+  }
+
+  // Uppercase letters (e.g., "A") are produced with shift+"a".
+  if (c.length === 1 && /[A-Z]/.test(c)) {
+    const base = c.toLowerCase();
+    return ['{shift}', base];
+  }
+
+  // If the key exists directly on the default layout, just press it.
+  if (maps.defaultKeys.has(c)) return [c];
+
+  // If the key is a shifted variant, show shift + the base key.
+  const base = maps.shiftedToBase[c];
+  if (base) return ['{shift}', base];
+
+  // Fallback: try highlighting the literal char.
+  return [c];
+}
+
+function setOskHintButtons(buttons) {
+  if (!osk) return;
+  const next = Array.isArray(buttons) ? buttons.filter(Boolean) : [];
+  const same = next.length === oskHintButtons.length && next.every((b, i) => b === oskHintButtons[i]);
+  if (same) return;
+  oskHintButtons = next;
+
+  const mods = next.includes('{shift}') ? ['{shift}'] : [];
+  const keys = next.filter((b) => b !== '{shift}');
+
+  const themes = [];
+  if (mods.length) themes.push({ class: 'hg-hintMod', buttons: mods.join(' ') });
+  if (keys.length) themes.push({ class: 'hg-hintKey', buttons: keys.join(' ') });
+
+  try {
+    osk.setOptions({ buttonTheme: themes });
+  } catch {
+    // ignore
+  }
+}
+
+function updateOskHintFromState() {
+  const expected = expectedCharAtActiveCursor();
+  const lang = activeLang === 'sp' ? 'es' : 'en';
+  setOskHintButtons(oskHintButtonsForChar(expected, lang));
 }
 
 function cleanTokenIdxList(list, maxExclusive) {
@@ -812,6 +938,8 @@ function applyOskLayoutForActiveLang() {
   } catch {
     // Ignore.
   }
+
+  updateOskHintFromState();
 }
 
 function oskButtonNameForKey(evKey) {
@@ -1212,6 +1340,8 @@ function updateRenderFromBuffers() {
     enHighlightMask,
     enUnderlineMask,
   );
+
+  updateOskHintFromState();
 }
 
 function computeTokenBoxes(tokenRanges, charSpans) {
