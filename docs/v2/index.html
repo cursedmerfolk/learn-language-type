@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Learn Language</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-keyboard@3.7.106/build/css/index.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="container learnContainer">
+      <h1 class="learnTitle">
+        Learn Language
+        <button
+          id="learnInfoBtn"
+          class="learnInfoBtn"
+          type="button"
+          aria-label="About Learn Language"
+          aria-controls="learnInfoDialog"
+          aria-expanded="false"
+        >
+          i
+        </button>
+      </h1>
+
+      <div class="learnHeaderActions" aria-label="Actions">
+        <button id="newRoundBtn" class="btn" type="button">New Round</button>
+        <button id="debugEndRoundBtn" class="btn hidden" type="button">Debug: end round</button>
+      </div>
+
+      <dialog id="learnInfoDialog" class="dialog learnInfoDialog" aria-label="About Learn Language">
+        <form method="dialog" class="dialog">
+          <div id="learnInfoDialogBody" class="learnInfoDialogBody">Loading…</div>
+          <div class="row dialogActions">
+            <button class="btn" value="close">Close</button>
+          </div>
+        </form>
+      </dialog>
+
+      <section class="row" aria-label="Status">
+        <div class="muted">Time: <span id="timeLeft">0.0</span>s</div>
+        <span id="status" class="hidden" aria-hidden="true">Waiting</span>
+        <div id="sentenceMeta" class="muted">Loading…</div>
+      </section>
+
+      <section class="learnScores" aria-label="Scores">
+        <div class="muted learnLastRound">
+          Last round:
+          <span id="lastCpm" class="value">—</span> wpm
+        </div>
+        <div class="muted learnHighScoreLine">
+          High score:
+          <span id="highScore" class="value">—</span> wpm
+        </div>
+      </section>
+
+      <section class="learnCenter" aria-label="Translation and typing">
+        <div id="sentenceWrap" class="sentenceWrap" aria-label="Current sentence">
+          <div id="sentenceStage" class="sentenceStage">
+            <div class="sentenceStack">
+              <div
+                id="typingBox"
+                class="typingbox learnSpanish"
+                tabindex="0"
+                role="textbox"
+                aria-multiline="true"
+                aria-label="Type the Spanish sentence shown"
+              ></div>
+              <div
+                id="englishTypingBox"
+                class="typingbox learnEnglishTyping"
+                tabindex="0"
+                role="textbox"
+                aria-multiline="true"
+                aria-label="Type the English sentence shown"
+              ></div>
+            </div>
+            <div id="sentenceCompleteMark" class="sentenceCompleteMark" aria-hidden="true">✓</div>
+          </div>
+
+          <div id="osk" class="osk" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <dialog id="resultsDialog">
+        <form method="dialog" class="dialog">
+          <h2>Round complete!</h2>
+          <div id="highScoreBanner" class="muted hidden" aria-live="polite">High Score!</div>
+          <div class="dialogGrid">
+            <div class="muted">Words/minute</div>
+            <div id="cpmValue" class="value">—</div>
+            <div class="muted">Time</div>
+            <div id="timeValue" class="value">—</div>
+            <div class="muted">Daily Progress</div>
+            <div id="roundChecks" class="roundChecks" aria-label="Round progress">
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+              <div class="roundCheckBox" aria-hidden="true"></div>
+            </div>
+          </div>
+          <div id="roundChecksHint" class="muted roundChecksHint hidden">Beat your previous WPM to fill box 7</div>
+          <div class="row dialogActions">
+            <button id="dialogNew" class="btn" value="new">Start over</button>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.7.106/build/index.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js"></script>
+    <script>
+      (function () {
+        if (!window.anime || !window.HTMLDialogElement) return;
+
+        const nativeShowModal = HTMLDialogElement.prototype.showModal;
+        const nativeShow = HTMLDialogElement.prototype.show;
+        const nativeClose = HTMLDialogElement.prototype.close;
+
+        function animateIn(dialog) {
+          try {
+            window.anime.remove(dialog);
+            dialog.style.opacity = '0';
+            dialog.style.transform = 'translateY(16px)';
+            window.anime({
+              targets: dialog,
+              opacity: [0, 1],
+              translateY: [16, 0],
+              duration: 220,
+              easing: 'easeOutCubic',
+              complete: function () {
+                dialog.style.opacity = '';
+                dialog.style.transform = '';
+              }
+            });
+          } catch {
+            // no-op
+          }
+        }
+
+        function animateOut(dialog, done) {
+          try {
+            window.anime.remove(dialog);
+            window.anime({
+              targets: dialog,
+              opacity: [1, 0],
+              translateY: [0, 16],
+              duration: 180,
+              easing: 'easeInCubic',
+              complete: done
+            });
+          } catch {
+            done();
+          }
+        }
+
+        HTMLDialogElement.prototype.showModal = function () {
+          nativeShowModal.call(this);
+          animateIn(this);
+        };
+
+        HTMLDialogElement.prototype.show = function () {
+          nativeShow.call(this);
+          animateIn(this);
+        };
+
+        HTMLDialogElement.prototype.close = function (returnValue) {
+          if (!this.open) {
+            nativeClose.call(this, returnValue);
+            return;
+          }
+          if (this.dataset.animClosing === '1') return;
+          this.dataset.animClosing = '1';
+          const dialog = this;
+          animateOut(dialog, function () {
+            dialog.dataset.animClosing = '0';
+            dialog.style.opacity = '';
+            dialog.style.transform = '';
+            nativeClose.call(dialog, returnValue);
+          });
+        };
+
+        // Animate Esc-close too.
+        document.querySelectorAll('dialog').forEach(function (d) {
+          d.addEventListener('cancel', function (ev) {
+            ev.preventDefault();
+            d.close(d.returnValue);
+          });
+        });
+      })();
+    </script>
+    <script src="./learn_language.js"></script>
+    <script>
+      (function () {
+        const btn = document.getElementById('learnInfoBtn');
+        const dialog = document.getElementById('learnInfoDialog');
+        const body = document.getElementById('learnInfoDialogBody');
+        if (!btn || !dialog || !body) return;
+
+        let loaded = false;
+        async function ensureLoaded() {
+          if (loaded) return;
+          const resp = await fetch('./learn_language_info.html', { cache: 'no-cache' });
+          if (!resp.ok) throw new Error('Failed to load info text');
+          body.innerHTML = await resp.text();
+          loaded = true;
+        }
+
+        btn.addEventListener('click', async function () {
+          btn.setAttribute('aria-expanded', 'true');
+          try {
+            await ensureLoaded();
+          } catch (e) {
+            body.textContent = 'Failed to load help text.';
+          }
+          dialog.showModal();
+        });
+
+        dialog.addEventListener('close', function () {
+          btn.setAttribute('aria-expanded', 'false');
+        });
+      })();
+    </script>
+  </body>
+</html>
